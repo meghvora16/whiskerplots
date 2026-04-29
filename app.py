@@ -618,4 +618,5 @@ def main():
         st.info("No data for selected filters.")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":    
+    main()
