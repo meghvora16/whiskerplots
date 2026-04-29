@@ -1,9 +1,7 @@
 """
-Electrolyzer Whisker Plot App  v3.0
+Electrolyzer Whisker Plot App  v2.0
 SS316L Corrosion Study
-Layout: One subplot per condition — each with independent Y-axis
-        LEFT half  = histogram bars (LC + WJ)
-        RIGHT half = box-whisker + raw X marks (LC + WJ)
+Layout: LEFT = histogram bars | RIGHT = box-whisker + raw X marks
 """
 
 import io, re
@@ -11,7 +9,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # ─────────────────────────────────────────────────────────────
 #  PAGE CONFIG
@@ -30,8 +27,8 @@ LC_COL   = "#C0392B"
 WJ_COL   = "#1F618D"
 LC_FILL  = "rgba(220,100,80,0.18)"
 WJ_FILL  = "rgba(50,130,180,0.18)"
-LC_FILL2 = "rgba(220,100,80,0.50)"
-WJ_FILL2 = "rgba(50,130,180,0.50)"
+LC_FILL2 = "rgba(220,100,80,0.45)"
+WJ_FILL2 = "rgba(50,130,180,0.45)"
 
 CUT_COL   = {"LC": LC_COL,   "WJ": WJ_COL}
 CUT_FILL  = {"LC": LC_FILL,  "WJ": WJ_FILL}
@@ -47,18 +44,18 @@ PARAM_UNITS = {
 #  METADATA
 # ─────────────────────────────────────────────────────────────
 SAMPLE_META = {
-    "50": ("LC","AC"),   "51": ("LC","Brushed"), "52": ("LC","Pickled"), "53": ("LC","B&P"),
-    "60": ("LC","AC"),   "61": ("LC","Brushed"), "62": ("LC","Pickled"),
-    "63": ("LC","B&P"),  "64": ("LC","BPP"),
-    "70": ("WJ","AC"),   "71": ("WJ","Brushed"), "72": ("WJ","Pickled"),
-    "73": ("WJ","B&P"),  "74": ("WJ","BPP"),
+    "50":("LC","AC"),   "51":("LC","Brushed"), "52":("LC","Pickled"), "53":("LC","B&P"),
+    "60":("LC","AC"),   "61":("LC","Brushed"), "62":("LC","Pickled"),
+    "63":("LC","B&P"),  "64":("LC","BPP"),
+    "70":("WJ","AC"),   "71":("WJ","Brushed"), "72":("WJ","Pickled"),
+    "73":("WJ","B&P"),  "74":("WJ","BPP"),
 }
 PH_MAP = {
-    "50": {"01":4,"05":1}, "51": {"02":4}, "52": {"03":1,"10":4}, "53": {"01":4,"04":1},
-    "60": {"02":1,"10":4}, "61": {"02":4}, "62": {"03":4},
-    "63": {"01":4,"03":1,"05":4}, "64": {"01":4,"05":4,"09":1},
-    "70": {"02":4,"03":1}, "71": {"02":4}, "72": {"07":1,"10":4},
-    "73": {"01":4,"03":1,"09":4}, "74": {"01":4,"03":4,"05":4,"06":1},
+    "50":{"01":4,"05":1}, "51":{"02":4}, "52":{"03":1,"10":4}, "53":{"01":4,"04":1},
+    "60":{"02":1,"10":4}, "61":{"02":4}, "62":{"03":4},
+    "63":{"01":4,"03":1,"05":4}, "64":{"01":4,"05":4,"09":1},
+    "70":{"02":4,"03":1}, "71":{"02":4}, "72":{"07":1,"10":4},
+    "73":{"01":4,"03":1,"09":4}, "74":{"01":4,"03":4,"05":4,"06":1},
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -183,262 +180,17 @@ def compute_stats(vals: np.ndarray, sd_mult: float):
     return dict(n=n, q1=q1, med=med, q3=q3,
                 lo=lo_w, hi=hi_w,
                 mean=clean.mean(), sd=sd,
-                outliers=outliers, clean=clean, raw=s)
+                outliers=outliers, clean=clean,
+                raw=s)
 
 # ─────────────────────────────────────────────────────────────
-#  DRAW ONE CONDITION PANEL onto a subplot
-#  Each subplot has its own Y-axis (independent range).
-#  X layout within one subplot (x range 0..1):
-#    [0.00 – 0.48]  LC histogram  (bars grow rightward from 0)
-#    [0.52 – 1.00]  WJ histogram  (bars grow rightward from 0.52)
-#    Divider at x=0.5
-#    Box-whisker drawn OVER histogram with X marks on top
-# ─────────────────────────────────────────────────────────────
-def draw_condition_panel(fig, row, col,
-                         lc_vals, lc_rids,
-                         wj_vals, wj_rids,
-                         cond, sd_mult, nbins,
-                         legend_done, show_ylabel, ylabel):
-    """
-    Draw histogram + box-whisker for one condition into subplot (row, col).
-    Returns updated legend_done set.
-    """
-
-    # Combine all vals for this condition to set shared Y range
-    all_vals = np.concatenate([
-        lc_vals if len(lc_vals) > 0 else np.array([]),
-        wj_vals if len(wj_vals) > 0 else np.array([])
-    ])
-
-    if len(all_vals) == 0:
-        return legend_done
-
-    y_min = all_vals.min(); y_max = all_vals.max()
-    y_rng = max(y_max - y_min, 1e-9)
-    y_pad = y_rng * 0.14
-    y_lo  = y_min - y_pad
-    y_hi  = y_max + y_pad
-
-    bin_edges = np.linspace(y_lo, y_hi, nbins + 1)
-
-    # X positions (within 0..1 normalised space per subplot):
-    # LC: histogram bars from x=0 rightward, max width 0.40
-    # WJ: histogram bars from x=0.50 rightward, max width 0.40
-    # LC box centred at x=0.20, WJ box centred at x=0.70
-    lc_hist_x0  = 0.00; lc_hist_maxw = 0.40
-    wj_hist_x0  = 0.50; wj_hist_maxw = 0.40
-    lc_box_cx   = 0.20
-    wj_box_cx   = 0.70
-    box_hw      = 0.14   # half-width of IQR box
-
-    for cut, vals, rids, hist_x0, hist_maxw, box_cx in [
-        ("LC", lc_vals, lc_rids, lc_hist_x0, lc_hist_maxw, lc_box_cx),
-        ("WJ", wj_vals, wj_rids, wj_hist_x0, wj_hist_maxw, wj_box_cx),
-    ]:
-        col_c  = CUT_COL[cut]
-        fill   = CUT_FILL[cut]
-        fill2  = CUT_FILL2[cut]
-        show_leg = cut not in legend_done
-
-        if len(vals) == 0:
-            if show_leg:
-                fig.add_trace(go.Scatter(
-                    x=[None], y=[None], mode="markers",
-                    name=cut, marker=dict(color=col_c, size=8),
-                    legendgroup=cut, showlegend=True,
-                ), row=row, col=col)
-                legend_done.add(cut)
-            continue
-
-        # ── Histogram bars ─────────────────────────────────
-        counts, _ = np.histogram(vals, bins=bin_edges)
-        max_c = counts.max() if counts.max() > 0 else 1
-
-        for bi in range(nbins):
-            c = counts[bi]
-            if c == 0:
-                continue
-            bar_w  = (c / max_c) * hist_maxw
-            by_lo  = bin_edges[bi]
-            by_hi  = bin_edges[bi + 1]
-
-            # Draw as a filled rectangle using a scatter fill trick
-            # We use go.Bar with horizontal orientation mapped to the subplot
-            # Actually we use shapes — but shapes need paper/axis ref.
-            # Use go.Bar with base for horizontal bars:
-            fig.add_trace(go.Bar(
-                x=[bar_w],
-                y=[(by_lo + by_hi) / 2],
-                base=[hist_x0],
-                orientation="h",
-                width=[(by_hi - by_lo) * 0.88],
-                marker=dict(color=fill2, line=dict(color=col_c, width=0.7)),
-                legendgroup=cut,
-                showlegend=False,
-                hoverinfo="skip",
-            ), row=row, col=col)
-
-        # Thin baseline for histogram
-        fig.add_trace(go.Scatter(
-            x=[hist_x0 + hist_maxw * 0.01, hist_x0 + hist_maxw * 0.01],
-            y=[y_lo, y_hi],
-            mode="lines",
-            line=dict(color=col_c, width=0.8, dash="dot"),
-            legendgroup=cut, showlegend=False,
-            hoverinfo="skip",
-        ), row=row, col=col)
-
-        # ── Box-whisker ─────────────────────────────────────
-        st_ = compute_stats(vals, sd_mult)
-        if st_ is None:
-            continue
-
-        # Whisker lines — upper
-        fig.add_trace(go.Scatter(
-            x=[box_cx, box_cx], y=[st_["q3"], st_["hi"]],
-            mode="lines", line=dict(color=col_c, width=1.6),
-            legendgroup=cut, showlegend=False, hoverinfo="skip",
-        ), row=row, col=col)
-        # Upper cap
-        fig.add_trace(go.Scatter(
-            x=[box_cx - box_hw*0.6, box_cx + box_hw*0.6],
-            y=[st_["hi"], st_["hi"]],
-            mode="lines", line=dict(color=col_c, width=1.9),
-            legendgroup=cut, showlegend=False, hoverinfo="skip",
-        ), row=row, col=col)
-        # Whisker lower
-        fig.add_trace(go.Scatter(
-            x=[box_cx, box_cx], y=[st_["lo"], st_["q1"]],
-            mode="lines", line=dict(color=col_c, width=1.6),
-            legendgroup=cut, showlegend=False, hoverinfo="skip",
-        ), row=row, col=col)
-        # Lower cap
-        fig.add_trace(go.Scatter(
-            x=[box_cx - box_hw*0.6, box_cx + box_hw*0.6],
-            y=[st_["lo"], st_["lo"]],
-            mode="lines", line=dict(color=col_c, width=1.9),
-            legendgroup=cut, showlegend=False, hoverinfo="skip",
-        ), row=row, col=col)
-
-        # IQR box — draw as two vertical lines + fill using scatter fill
-        box_h = st_["q3"] - st_["q1"]
-        # Box outline
-        box_xs = [box_cx-box_hw, box_cx+box_hw, box_cx+box_hw,
-                  box_cx-box_hw, box_cx-box_hw]
-        box_ys = [st_["q1"], st_["q1"], st_["q3"], st_["q3"], st_["q1"]]
-        fig.add_trace(go.Scatter(
-            x=box_xs, y=box_ys,
-            mode="lines", fill="toself",
-            fillcolor=fill,
-            line=dict(color=col_c, width=1.8),
-            legendgroup=cut, showlegend=False, hoverinfo="skip",
-        ), row=row, col=col)
-
-        # Median line
-        fig.add_trace(go.Scatter(
-            x=[box_cx - box_hw, box_cx + box_hw],
-            y=[st_["med"], st_["med"]],
-            mode="lines", line=dict(color=col_c, width=2.8),
-            legendgroup=cut, showlegend=False, hoverinfo="skip",
-        ), row=row, col=col)
-
-        # Mean marker (open circle)
-        fig.add_trace(go.Scatter(
-            x=[box_cx], y=[st_["mean"]],
-            mode="markers",
-            marker=dict(symbol="circle-open", size=10, color=col_c,
-                        line=dict(color=col_c, width=2.2)),
-            legendgroup=cut, showlegend=False,
-            hovertemplate=f"<b>Mean ({cut})</b>: %{{y:.5f}}<extra></extra>",
-        ), row=row, col=col)
-
-        # Outlier dots (open circles)
-        if len(st_["outliers"]) > 0:
-            fig.add_trace(go.Scatter(
-                x=[box_cx] * len(st_["outliers"]),
-                y=st_["outliers"].tolist(),
-                mode="markers",
-                marker=dict(symbol="circle-open", size=9, color=col_c,
-                            line=dict(color=col_c, width=1.5)),
-                legendgroup=cut, showlegend=False,
-                hovertemplate=f"<b>Outlier ({cut})</b>: %{{y:.5f}}<extra></extra>",
-            ), row=row, col=col)
-
-        # ── Raw X marks overlaid on box ─────────────────────
-        n_pts = len(vals)
-        np.random.seed(42)
-        jitter = np.random.uniform(-box_hw * 0.55, box_hw * 0.55, n_pts)
-
-        fig.add_trace(go.Scatter(
-            x=(box_cx + jitter).tolist(),
-            y=vals.tolist(),
-            mode="markers",
-            marker=dict(symbol="x", size=6, color=col_c,
-                        line=dict(color=col_c, width=1.5), opacity=0.80),
-            name=cut if show_leg else None,
-            legendgroup=cut,
-            showlegend=show_leg,
-            customdata=rids,
-            hovertemplate=(
-                f"<b>{cut} — {cond}</b><br>"
-                "Value: %{y:.5f}<br>"
-                "<i>Click to exclude</i><extra></extra>"
-            ),
-        ), row=row, col=col)
-
-        if show_leg:
-            legend_done.add(cut)
-
-        # n= annotation — use subplot annotation
-        fig.add_annotation(
-            x=box_cx, y=y_lo,
-            xref=f"x{col}", yref=f"y{col}",
-            text=f"n={st_['n']}",
-            showarrow=False,
-            font=dict(size=8.5, color=col_c),
-            xanchor="center", yanchor="top",
-            yshift=-4,
-        )
-
-    # Mid divider line
-    fig.add_trace(go.Scatter(
-        x=[0.48, 0.48], y=[y_lo, y_hi],
-        mode="lines",
-        line=dict(color="#9AAABB", width=1.0),
-        legendgroup="__div__", showlegend=False, hoverinfo="skip",
-    ), row=row, col=col)
-
-    # Update this subplot's axes
-    axis_idx = col  # 1-based
-    xaxis_key = f"xaxis{axis_idx}"
-    yaxis_key = f"yaxis{axis_idx}"
-
-    fig.update_xaxes(
-        range=[-0.03, 1.03],
-        showgrid=False, zeroline=False,
-        tickvals=[0.20, 0.70],
-        ticktext=["LC", "WJ"],
-        tickfont=dict(size=9, color="#445566"),
-        title_text=cond,
-        title_font=dict(size=10, color="#2E4057"),
-        row=row, col=col,
-    )
-    fig.update_yaxes(
-        range=[y_lo - y_pad*0.6, y_hi + y_pad*0.2],
-        gridcolor="#E8EDF5", gridwidth=0.8,
-        zeroline=True, zerolinecolor="#CCCCCC", zerolinewidth=0.8,
-        title_text=ylabel if show_ylabel else "",
-        title_font=dict(size=10),
-        showticklabels=True,
-        tickfont=dict(size=8),
-        row=row, col=col,
-    )
-
-    return legend_done
-
-
-# ─────────────────────────────────────────────────────────────
-#  MAKE FULL FIGURE  (one subplot per condition)
+#  MAIN FIGURE
+#
+#  X-axis layout per condition-slot (width = 1 unit):
+#    [0.0 – 0.50]  LC histogram   (bars extend LEFT from x=0.48)
+#    [0.50 – 1.00] WJ histogram   (bars extend LEFT from x=0.98)
+#    Box panel is drawn to the RIGHT of all histogram slots:
+#    one LC box and one WJ box per condition, stacked tightly.
 # ─────────────────────────────────────────────────────────────
 def make_figure(df, param, pH_filter, dir_filter,
                 r2_min, sd_mult, log_icorr,
@@ -462,72 +214,260 @@ def make_figure(df, param, pH_filter, dir_filter,
         sub = sub[sub["value"] > 0].copy()
         sub["value"] = np.log10(sub["value"])
 
-    unit   = PARAM_UNITS.get(param, "")
-    ylabel = (f"log₁₀(icorr)  [{unit}]"
-              if (param == "Icorr" and log_icorr)
-              else f"{param}  [{unit}]")
+    unit  = PARAM_UNITS.get(param, "")
+    ylabel = f"log₁₀(icorr)  [{unit}]" if (param == "Icorr" and log_icorr) else f"{param}  [{unit}]"
 
-    conds = [c for c in COND_ORDER if c in sub["condition"].unique()]
-    n_c   = len(conds)
+    conds  = [c for c in COND_ORDER if c in sub["condition"].unique()]
+    n_c    = len(conds)
+
+    fig = go.Figure()
 
     if n_c == 0 or sub.empty:
-        fig = go.Figure()
         fig.add_annotation(text="No data for selected filters",
                            xref="paper", yref="paper", x=0.5, y=0.5,
                            showarrow=False, font_size=16, font_color="#888")
-        fig.update_layout(height=420, plot_bgcolor="white", paper_bgcolor="white")
         return fig
 
-    # ── Create subplots — one per condition, shared row ──────
-    fig = make_subplots(
-        rows=1, cols=n_c,
-        shared_yaxes=False,     # ← INDEPENDENT Y-axis per condition
-        horizontal_spacing=0.06,
-        subplot_titles=[""] * n_c,  # we set titles via xaxis title
-    )
+    # ── Global Y range ────────────────────────────────────────
+    all_v = sub["value"].dropna().values
+    y_min = all_v.min(); y_max = all_v.max()
+    y_rng = max(y_max - y_min, 1e-9)
+    y_pad = y_rng * 0.13
+    y_lo  = y_min - y_pad
+    y_hi  = y_max + y_pad
 
+    # ── Layout constants ──────────────────────────────────────
+    # Each condition occupies `slot` units on the X axis.
+    # Inside each slot: LC half (left) + WJ half (right).
+    # Box region sits to the right of the histogram region.
+    slot        = 1.0        # width of one condition slot
+    cut_half    = slot / 2   # LC = [cx, cx+0.5), WJ = [cx+0.5, cx+1)
+
+    # Box region: starts after all histogram slots
+    box_gap     = 0.15       # gap between hist and box regions
+    box_slot    = 0.65       # width of one condition's box pair
+    box_box_w   = 0.13       # half-width of each box
+
+    hist_max_w  = cut_half * 0.80   # max bar length (toward left of each half)
     nbins       = 10
-    legend_done = set()
 
-    pH_str     = f"pH {pH_filter}" if pH_filter != "Both" else "pH 1 & 4"
-    dir_str    = f" | {dir_filter}" if not is_ocp and dir_filter != "Both" else ""
-    sample_str = f" | {sample_filter}" if sample_filter else ""
+    rng_y       = y_hi - y_lo
+
+    # Precompute bin edges (shared across all panels for alignment)
+    bin_edges = np.linspace(y_lo, y_hi, nbins + 1)
+
+    added_legend = set()
+    tick_hist_vals, tick_hist_text = [], []
+    tick_box_vals,  tick_box_text  = [], []
 
     for ci, cond in enumerate(conds):
-        col_idx = ci + 1   # 1-based
+        hist_cx = ci * slot          # left edge of this condition's histogram slot
+        box_cx  = n_c * slot + box_gap + ci * box_slot  # left edge of this condition's box pair
 
-        lc_sub = sub[(sub["condition"] == cond) & (sub["cut"] == "LC")]
-        wj_sub = sub[(sub["condition"] == cond) & (sub["cut"] == "WJ")]
+        tick_hist_vals.append(hist_cx + cut_half)
+        tick_hist_text.append(cond)
+        tick_box_vals.append(box_cx + box_slot / 2)
+        tick_box_text.append(cond)
 
-        lc_vals = lc_sub["value"].dropna().values
-        wj_vals = wj_sub["value"].dropna().values
-        lc_rids = lc_sub["row_id"].values
-        wj_rids = wj_sub["row_id"].values
+        # Vertical separator between conditions (histogram area)
+        if ci > 0:
+            fig.add_shape(type="line",
+                x0=hist_cx, x1=hist_cx, y0=y_lo, y1=y_hi,
+                line=dict(color="#D0D8E8", width=1, dash="dash"))
 
-        legend_done = draw_condition_panel(
-            fig=fig, row=1, col=col_idx,
-            lc_vals=lc_vals, lc_rids=lc_rids,
-            wj_vals=wj_vals, wj_rids=wj_rids,
-            cond=cond, sd_mult=sd_mult, nbins=nbins,
-            legend_done=legend_done,
-            show_ylabel=(ci == 0),
-            ylabel=ylabel,
-        )
+        for ki, cut in enumerate(["LC", "WJ"]):
+            col   = CUT_COL[cut]
+            fill  = CUT_FILL[cut]
+            fill2 = CUT_FILL2[cut]
 
-    # ── Figure-level layout ───────────────────────────────────
+            csub  = sub[(sub["condition"] == cond) & (sub["cut"] == cut)]
+            vals  = csub["value"].dropna().values
+            rids  = csub["row_id"].values
+
+            show_leg = cut not in added_legend
+
+            # ── HISTOGRAM (left panel) ────────────────────────
+            # LC: right edge at hist_cx + 0.48, bars grow LEFT
+            # WJ: right edge at hist_cx + 0.98, bars grow LEFT
+            bar_right = hist_cx + (ki + 1) * cut_half - 0.02
+
+            if len(vals) > 0:
+                counts, _ = np.histogram(vals, bins=bin_edges)
+                max_c = counts.max() if counts.max() > 0 else 1
+
+                for bi in range(nbins):
+                    c = counts[bi]
+                    if c == 0:
+                        continue
+                    bar_len = (c / max_c) * hist_max_w * 0.88
+                    by_lo   = bin_edges[bi]
+                    by_hi   = bin_edges[bi + 1]
+                    bx_lo   = bar_right - bar_len
+                    bx_hi   = bar_right
+
+                    fig.add_shape(type="rect",
+                        x0=bx_lo, x1=bx_hi,
+                        y0=by_lo, y1=by_hi,
+                        fillcolor=fill2,
+                        line=dict(color=col, width=0.7),
+                        layer="below")
+
+                # Baseline for this cut's histogram
+                fig.add_shape(type="line",
+                    x0=bar_right, x1=bar_right,
+                    y0=y_lo, y1=y_hi,
+                    line=dict(color=col, width=0.8, dash="dot"))
+
+            # ── BOX-WHISKER + X MARKS (right panel) ──────────
+            # LC box at box_cx + 0.18, WJ box at box_cx + 0.47
+            bx = box_cx + 0.18 + ki * 0.29
+
+            if len(vals) == 0:
+                # invisible trace for legend
+                if show_leg:
+                    fig.add_trace(go.Scatter(
+                        x=[None], y=[None], mode="markers",
+                        name=cut,
+                        marker=dict(color=col, size=8),
+                        legendgroup=cut, showlegend=True,
+                    ))
+                    added_legend.add(cut)
+                continue
+
+            st_ = compute_stats(vals, sd_mult)
+            if st_ is None:
+                continue
+
+            if show_leg:
+                added_legend.add(cut)
+
+            # Whisker lines
+            fig.add_shape(type="line",
+                x0=bx, x1=bx, y0=st_["q3"], y1=st_["hi"],
+                line=dict(color=col, width=1.5))
+            fig.add_shape(type="line",           # upper cap
+                x0=bx - box_box_w * 0.7, x1=bx + box_box_w * 0.7,
+                y0=st_["hi"], y1=st_["hi"],
+                line=dict(color=col, width=1.8))
+            fig.add_shape(type="line",
+                x0=bx, x1=bx, y0=st_["lo"], y1=st_["q1"],
+                line=dict(color=col, width=1.5))
+            fig.add_shape(type="line",           # lower cap
+                x0=bx - box_box_w * 0.7, x1=bx + box_box_w * 0.7,
+                y0=st_["lo"], y1=st_["lo"],
+                line=dict(color=col, width=1.8))
+
+            # IQR box
+            fig.add_shape(type="rect",
+                x0=bx - box_box_w, x1=bx + box_box_w,
+                y0=st_["q1"], y1=st_["q3"],
+                fillcolor=fill, line=dict(color=col, width=1.8))
+
+            # Median line
+            fig.add_shape(type="line",
+                x0=bx - box_box_w, x1=bx + box_box_w,
+                y0=st_["med"], y1=st_["med"],
+                line=dict(color=col, width=2.8))
+
+            # Mean marker (open circle)
+            fig.add_trace(go.Scatter(
+                x=[bx], y=[st_["mean"]],
+                mode="markers",
+                marker=dict(symbol="circle-open", size=10, color=col,
+                            line=dict(color=col, width=2.0)),
+                legendgroup=cut, showlegend=False,
+                hovertemplate=f"<b>Mean ({cut} – {cond})</b>: %{{y:.4f}}<extra></extra>",
+            ))
+
+            # Outlier dots (open circles, beyond whiskers)
+            if len(st_["outliers"]) > 0:
+                fig.add_trace(go.Scatter(
+                    x=[bx] * len(st_["outliers"]),
+                    y=st_["outliers"].tolist(),
+                    mode="markers",
+                    marker=dict(symbol="circle-open", size=8, color=col,
+                                line=dict(color=col, width=1.5)),
+                    legendgroup=cut, showlegend=False,
+                    hovertemplate=f"<b>Outlier ({cut})</b>: %{{y:.4f}}<extra></extra>",
+                ))
+
+            # X raw data marks — overlaid ON the box, with jitter
+            n_pts  = len(vals)
+            rng_x  = box_box_w * 0.65
+            np.random.seed(42)
+            jitter = np.random.uniform(-rng_x, rng_x, n_pts)
+
+            fig.add_trace(go.Scatter(
+                x=(bx + jitter).tolist(),
+                y=vals.tolist(),
+                mode="markers",
+                marker=dict(symbol="x", size=6, color=col,
+                            line=dict(color=col, width=1.5),
+                            opacity=0.75),
+                name=cut if show_leg else None,
+                legendgroup=cut,
+                showlegend=show_leg,
+                customdata=rids,
+                hovertemplate=(
+                    f"<b>{cut} — {cond}</b><br>"
+                    "Value: %{y:.5f}<br>"
+                    "<i>Click to exclude</i><extra></extra>"
+                ),
+            ))
+
+            # n= label below each box
+            fig.add_annotation(
+                x=bx, y=y_lo - y_pad * 0.55,
+                text=f"n={st_['n']}",
+                showarrow=False,
+                font=dict(size=9, color=col),
+                xanchor="center",
+            )
+
+    # ── Vertical divider between histogram and box regions ────
+    div_x = n_c * slot + box_gap * 0.4
+    fig.add_shape(type="line",
+        x0=div_x, x1=div_x, y0=y_lo, y1=y_hi,
+        line=dict(color="#8899BB", width=1.2))
+
+    # ── Axis tick config ──────────────────────────────────────
+    all_tick_vals = tick_hist_vals + tick_box_vals
+    all_tick_text = tick_hist_text + tick_box_text
+
+    pH_str     = f"pH {pH_filter}" if pH_filter != "Both" else "pH 1 & 4"
+    dir_str    = (f" | {dir_filter}" if not is_ocp and dir_filter != "Both" else "")
+    sample_str = f" | {sample_filter}" if sample_filter else ""
+
+    x_end = n_c * slot + box_gap + n_c * box_slot + 0.1
+
     fig.update_layout(
         title=dict(
-            text=f"<b>{param}</b>  |  {pH_str}{dir_str}{sample_str}"
-                 "<br><sup style='color:#777;font-size:10px'>"
-                 "Each panel has independent Y-axis  ·  "
-                 "Left = histogram  ·  Right = box-whisker + X marks</sup>",
+            text=f"<b>{param}</b>  |  {pH_str}{dir_str}{sample_str}",
             font=dict(size=15, color="#2E4057"),
             x=0.5,
+        ),
+        xaxis=dict(
+            tickvals=all_tick_vals,
+            ticktext=all_tick_text,
+            tickfont=dict(size=11, color="#2E4057"),
+            showgrid=False,
+            zeroline=False,
+            range=[-0.08, x_end],
+            # Add region labels via annotations
+        ),
+        yaxis=dict(
+            title=dict(text=ylabel, font=dict(size=11, color="#333")),
+            range=[y_lo - y_pad * 0.7, y_hi + y_pad * 0.15],
+            gridcolor="#E8EDF5",
+            gridwidth=0.8,
+            zeroline=True,
+            zerolinecolor="#CCCCCC",
+            zerolinewidth=0.8,
         ),
         legend=dict(
             title=dict(text="Cut type", font=dict(size=10)),
             orientation="v",
-            x=1.01, y=0.95,
+            x=1.01, y=0.98,
             bgcolor="rgba(248,250,252,0.92)",
             bordercolor="#C0CAD8",
             borderwidth=1,
@@ -535,11 +475,30 @@ def make_figure(df, param, pH_filter, dir_filter,
         ),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        height=480,
-        margin=dict(l=70, r=110, t=80, b=70),
-        barmode="overlay",
+        height=520,
+        margin=dict(l=72, r=130, t=65, b=72),
         clickmode="event",
     )
+
+    # Region header annotations
+    if n_c > 0:
+        # "Distribution" label over histogram region
+        fig.add_annotation(
+            x=(n_c * slot) / 2 - 0.3, y=y_hi + y_pad * 0.08,
+            text="◀  Distribution (histogram)",
+            showarrow=False,
+            font=dict(size=9.5, color="#667799"),
+            xanchor="center",
+        )
+        # "Box & Whisker" label over box region
+        fig.add_annotation(
+            x=n_c * slot + box_gap + (n_c * box_slot) / 2,
+            y=y_hi + y_pad * 0.08,
+            text="Box & Whisker  ▶",
+            showarrow=False,
+            font=dict(size=9.5, color="#667799"),
+            xanchor="center",
+        )
 
     return fig
 
@@ -550,22 +509,16 @@ def make_figure(df, param, pH_filter, dir_filter,
 def main():
     st.markdown("""
     <style>
-    .block-container { padding-top: 1rem; }
-    h1 { color: #2E4057; font-size: 1.55rem; }
+    .block-container{padding-top:1rem}
+    h1{color:#2E4057;font-size:1.55rem}
     </style>""", unsafe_allow_html=True)
 
     st.title("📊 Electrolyzer Whisker — SS316L Corrosion Study")
-    st.caption(
-        "Each condition = independent subplot with its own Y-axis  ·  "
-        "Left = histogram  ·  Right = box-whisker + raw X marks  ·  "
-        "Click X marks to exclude points"
-    )
+    st.caption("Left panel = histogram | Right panel = box-whisker with raw X marks | Click X marks to exclude points")
 
     # ── Session state ─────────────────────────────────────────
-    if "deleted_ids" not in st.session_state:
-        st.session_state.deleted_ids = set()
-    if "df" not in st.session_state:
-        st.session_state.df = None
+    if "deleted_ids"  not in st.session_state: st.session_state.deleted_ids  = set()
+    if "df"           not in st.session_state: st.session_state.df           = None
 
     # ── Sidebar ───────────────────────────────────────────────
     with st.sidebar:
@@ -573,8 +526,8 @@ def main():
         src = st.radio("Load from:", ["Pre-filled Excel", "Upload raw files"])
 
         if src == "Upload raw files":
-            lf = st.file_uploader("batch_fit_summary.xlsx",   type=["xlsx"])
-            of = st.file_uploader("ocp_summary_samples.xlsx", type=["xlsx"])
+            lf = st.file_uploader("batch_fit_summary.xlsx",     type=["xlsx"])
+            of = st.file_uploader("ocp_summary_samples.xlsx",   type=["xlsx"])
             if lf and of:
                 with st.spinner("Parsing…"):
                     st.session_state.df = load_uploaded(lf.read(), of.read())
@@ -586,10 +539,7 @@ def main():
                 if st.session_state.df is not None:
                     st.success(f"{len(st.session_state.df):,} rows loaded")
                 else:
-                    st.warning(
-                        "Place ElectrolyzerWhisker_Final.xlsx in the app folder, "
-                        "or upload files above."
-                    )
+                    st.warning("Place ElectrolyzerWhisker_Final.xlsx in the app folder, or upload files above.")
 
         if st.session_state.df is None:
             st.stop()
@@ -600,26 +550,23 @@ def main():
         st.header("⚙ Filters")
 
         params_av = sorted(df["parameter"].unique())
-        param = st.selectbox(
-            "Parameter", params_av,
-            index=params_av.index("OCP1") if "OCP1" in params_av else 0
-        )
+        param = st.selectbox("Parameter",  params_av,
+            index=params_av.index("OCP1") if "OCP1" in params_av else 0)
 
         pH_opts   = ["Both"] + sorted(str(p) for p in df["pH"].dropna().unique())
         pH_filter = st.selectbox("pH", pH_opts)
 
-        is_ocp     = param.startswith("OCP")
-        dir_filter = ("Both" if is_ocp
-                      else st.selectbox("Direction", ["Both","Anodic","Cathodic"]))
+        is_ocp = param.startswith("OCP")
+        dir_filter = "Both" if is_ocp else st.selectbox("Direction", ["Both","Anodic","Cathodic"])
 
-        samp_opts     = [""] + sorted(df["sample"].unique())
-        sample_filter = st.selectbox("Sample (blank = all)", samp_opts)
+        samp_opts    = [""] + sorted(df["sample"].unique())
+        sample_filter= st.selectbox("Sample (blank = all)", samp_opts)
 
         st.divider()
         st.header("📐 Statistics")
         r2_min    = st.slider("R² minimum",      0.0, 1.0, 0.90, 0.01)
         sd_mult   = st.slider("Outlier × StDev", 1.0, 4.0, 2.0,  0.5)
-        log_icorr = st.checkbox("Log₁₀(Icorr)", value=True)
+        log_icorr = st.checkbox("Log₁₀(Icorr)",  value=True)
 
         st.divider()
         st.header("🗑 Excluded points")
@@ -638,20 +585,19 @@ def main():
             "⬇ Download filtered CSV",
             data=filtered_df.to_csv(index=False).encode(),
             file_name="electrolyzer_filtered.csv",
-            mime="text/csv",
-            use_container_width=True,
+            mime="text/csv", use_container_width=True,
         )
 
     # ── Metrics ───────────────────────────────────────────────
-    df       = st.session_state.df
+    df = st.session_state.df
     param_df = df[df["parameter"] == param]
     active   = param_df[~param_df["row_id"].isin(st.session_state.deleted_ids)]
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total (this param)", len(param_df))
-    c2.metric("Active",             len(active))
-    c3.metric("Excluded",           len(st.session_state.deleted_ids))
-    c4.metric("Conditions",         active["condition"].nunique())
+    c1.metric("Total (this param)",  len(param_df))
+    c2.metric("Active",              len(active))
+    c3.metric("Excluded",            len(st.session_state.deleted_ids))
+    c4.metric("Conditions",          active["condition"].nunique())
 
     # ── Plot ──────────────────────────────────────────────────
     fig = make_figure(
@@ -662,14 +608,12 @@ def main():
     )
 
     event = st.plotly_chart(
-        fig,
-        use_container_width=True,
+        fig, use_container_width=True,
         on_select="rerun",
-        key=(f"chart_{param}_{pH_filter}_{dir_filter}_"
-             f"{sample_filter}_{len(st.session_state.deleted_ids)}"),
+        key=f"chart_{param}_{pH_filter}_{dir_filter}_{sample_filter}_{len(st.session_state.deleted_ids)}",
     )
 
-    # Handle point clicks — exclude selected points
+    # Handle point clicks
     if event and event.get("selection") and event["selection"].get("points"):
         for pt in event["selection"]["points"]:
             cdata = pt.get("customdata")
@@ -679,12 +623,9 @@ def main():
                     st.session_state.deleted_ids.add(rid)
                     st.rerun()
 
-    st.caption(
-        "💡 Click any **✕ mark** to exclude that point — "
-        "each panel's statistics and whiskers update instantly."
-    )
+    st.caption("💡 Click any **✕ mark** to exclude that point — statistics and whiskers update instantly.")
 
-    # ── Statistics table ──────────────────────────────────────
+    # ── Stats table ───────────────────────────────────────────
     st.subheader("📋 Summary Statistics")
 
     sub = df[~df["row_id"].isin(st.session_state.deleted_ids)]
@@ -701,21 +642,15 @@ def main():
         sub = sub[sub["value"] > 0].copy()
         sub["value"] = np.log10(sub["value"])
 
-    stat_rows = []
+    rows = []
     for cond in COND_ORDER:
         for cut in ["LC", "WJ"]:
-            vals = sub[
-                (sub["condition"] == cond) & (sub["cut"] == cut)
-            ]["value"].dropna().values
-            if len(vals) == 0:
-                continue
+            vals = sub[(sub["condition"] == cond) & (sub["cut"] == cut)]["value"].dropna().values
+            if len(vals) == 0: continue
             st_ = compute_stats(vals, sd_mult)
-            if st_ is None:
-                continue
-            stat_rows.append({
-                "Condition":  cond,
-                "Cut":        cut,
-                "n":          st_["n"],
+            if st_ is None: continue
+            rows.append({
+                "Condition": cond, "Cut": cut, "n": st_["n"],
                 "n_outlier":  len(st_["outliers"]),
                 "Min":        round(float(st_["clean"].min()), 5),
                 "Q1":         round(float(st_["q1"]),          5),
@@ -728,19 +663,13 @@ def main():
                 "Hi_Whisker": round(float(st_["hi"]),          5),
             })
 
-    if stat_rows:
-        sdf = pd.DataFrame(stat_rows)
-
-        def _color_row(row):
+    if rows:
+        sdf = pd.DataFrame(rows)
+        def _color(row):
             bg = "#FAD7D3" if row["Cut"] == "LC" else "#D0E8F7"
-            return [f"background-color:{bg}" if i == 1 else ""
-                    for i in range(len(row))]
-
-        st.dataframe(
-            sdf.style.apply(_color_row, axis=1),
-            use_container_width=True,
-            height=300,
-        )
+            return [f"background-color:{bg}" if i == 1 else "" for i in range(len(row))]
+        st.dataframe(sdf.style.apply(_color, axis=1),
+                     use_container_width=True, height=300)
     else:
         st.info("No data for the selected filters.")
 
