@@ -1,10 +1,12 @@
 """
-Electrolyzer Whisker Plot App  v2.6
-Fixes:
-  - Legend only shows entries for cuts/folders that actually have data
-    after all filters are applied
-  - Folder legend labels reflect actual samples present (not all possible)
-  - Box legend entry added only when data confirmed present
+Electrolyzer Whisker Plot App  v2.7
+SS316L Corrosion Study — Maximally distinguishable mark colours
++ Detailed excluded-points log
++ Distinct marker shapes: circle (T1) vs x (T2)
+
+Mark encoding:
+  Colour  = cut × pH × subsample folder (18 distinct colours)
+  Symbol  = test number  (● circle = T1,  ✕ x = T2)
 """
 
 import io, re
@@ -21,7 +23,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────
-#  COLOUR ASSIGNMENTS
+#  COLOUR ASSIGNMENTS  (18 unique cut × pH × folder combos)
 # ─────────────────────────────────────────────────────────────
 FOLDER_COLOURS = {
     ("LC","1","02"): "#E53935",
@@ -44,7 +46,10 @@ FOLDER_COLOURS = {
     ("WJ","4","10"): "#0288D1",
 }
 FALLBACK_COLOUR = "#9E9E9E"
-TEST_SYMBOL     = {"1": "x", "2": "cross", "3": "diamond-x", "4": "square-x"}
+
+# ● circle = T1  (filled, closed shape — clearly different from x)
+# ✕ x      = T2  (open stroke mark)
+TEST_SYMBOL = {"1": "circle", "2": "x", "3": "diamond", "4": "square"}
 
 CUT_COL   = {"LC": "#C0392B",                "WJ": "#1F618D"}
 CUT_FILL  = {"LC": "rgba(220,100,80,0.18)",  "WJ": "rgba(50,130,180,0.18)"}
@@ -216,7 +221,6 @@ def make_figure(df, param, pH_filter, dir_filter,
 
     is_ocp = param.startswith("OCP")
 
-    # ── Apply all filters first ───────────────────────────────
     sub = df[df["parameter"] == param].copy()
     if not is_ocp:
         if dir_filter != "Both":
@@ -251,8 +255,7 @@ def make_figure(df, param, pH_filter, dir_filter,
         fig.update_layout(height=500, plot_bgcolor="white", paper_bgcolor="white")
         return fig
 
-    # ── Pre-scan: which cuts actually have data after filtering? ──
-    # This determines which box legend entries to show — no ghosts
+    # Pre-scan: which cuts have data after filtering (prevents ghost legend entries)
     cuts_with_data = set(sub["cut"].unique())
 
     all_v = sub["value"].dropna().values
@@ -285,7 +288,6 @@ def make_figure(df, param, pH_filter, dir_filter,
                 line=dict(color="#D0D8E8", width=1, dash="dash"))
 
         for ki, cut in enumerate(["LC","WJ"]):
-            # ── Skip entirely if this cut has zero data after filtering ──
             if cut not in cuts_with_data:
                 continue
 
@@ -296,7 +298,7 @@ def make_figure(df, param, pH_filter, dir_filter,
             csub = sub[(sub["condition"]==cond) & (sub["cut"]==cut)]
             vals = csub["value"].dropna().values
 
-            # Histogram
+            # ── Histogram ─────────────────────────────────────
             bar_right = hist_cx + (ki+1)*cut_half - 0.02
             if len(vals) > 0:
                 counts, _ = np.histogram(vals, bins=bin_edges)
@@ -308,7 +310,8 @@ def make_figure(df, param, pH_filter, dir_filter,
                     fig.add_shape(type="rect",
                         x0=bar_right-bar_len, x1=bar_right,
                         y0=bin_edges[bi], y1=bin_edges[bi+1],
-                        fillcolor=fill2, line=dict(color=col, width=0.7), layer="below")
+                        fillcolor=fill2, line=dict(color=col, width=0.7),
+                        layer="below")
                 fig.add_shape(type="line",
                     x0=bar_right, x1=bar_right, y0=y_lo, y1=y_hi,
                     line=dict(color=col, width=0.8, dash="dot"))
@@ -316,12 +319,12 @@ def make_figure(df, param, pH_filter, dir_filter,
             bx = box_cx + 0.18 + ki*0.29
 
             if len(vals) == 0:
-                continue   # ← no ghost legend entry added here
+                continue   # no ghost legend
 
             st_ = compute_stats(vals, sd_mult)
             if st_ is None: continue
 
-            # ── Box legend entry — only added when we have real data ──
+            # Box legend — only when data is confirmed present
             if cut not in added_box_legend:
                 fig.add_trace(go.Scatter(
                     x=[None], y=[None], mode="markers",
@@ -347,7 +350,8 @@ def make_figure(df, param, pH_filter, dir_filter,
                 x0=bx-box_box_w, x1=bx+box_box_w, y0=st_["med"], y1=st_["med"],
                 line=dict(color=col, width=2.8))
             # Mean
-            fig.add_trace(go.Scatter(x=[bx], y=[st_["mean"]], mode="markers",
+            fig.add_trace(go.Scatter(
+                x=[bx], y=[st_["mean"]], mode="markers",
                 marker=dict(symbol="circle-open", size=10, color=col,
                             line=dict(color=col, width=2.0)),
                 legendgroup=f"box_{cut}", showlegend=False,
@@ -362,7 +366,7 @@ def make_figure(df, param, pH_filter, dir_filter,
                     legendgroup=f"box_{cut}", showlegend=False,
                     hovertemplate=f"<b>Outlier ({cut})</b>: %{{y:.4f}}<extra></extra>"))
 
-            # ── X marks — label uses only samples ACTUALLY PRESENT in filtered data ──
+            # ── X marks coloured by folder, shaped by test ────
             np.random.seed(42 + ki*100 + ci*10)
             rng_x = box_box_w * 0.60
 
@@ -378,27 +382,36 @@ def make_figure(df, param, pH_filter, dir_filter,
 
                         trids    = tph_sub["row_id"].values
                         mark_col = get_mark_colour(cut, ph_val, folder_val)
-                        symbol   = TEST_SYMBOL.get(str(t_val), "x")
+                        symbol   = TEST_SYMBOL.get(str(t_val), "circle")
 
-                        # ── Build legend label from ACTUAL samples in filtered data ──
+                        # Legend label uses only samples present in filtered data
                         actual_samples = sorted(tph_sub["sample"].unique())
                         samples_short  = ",".join(s.replace("S","") for s in actual_samples)
                         leg_label      = f"{cut} pH{ph_val} F{folder_val} ({samples_short})"
                         leg_key        = f"{cut}_pH{ph_val}_F{folder_val}_T{t_val}"
-                        leg_name       = f"{leg_label}  T{t_val}"
+                        t_label        = "●T1" if t_val == "1" else "✕T2"
+                        leg_name       = f"{leg_label}  {t_label}"
                         show_m         = leg_key not in added_mark_legend
                         jitter         = np.random.uniform(-rng_x, rng_x, len(tvals))
 
                         custom = tph_sub[["row_id","sample","folder","test",
                                           "point","pH","direction"]].values.tolist()
 
+                        # Circle (T1): filled solid marker
+                        # X (T2): open stroke marker
+                        is_circle = (symbol == "circle")
                         fig.add_trace(go.Scatter(
                             x=(bx + jitter).tolist(),
                             y=tvals.tolist(),
                             mode="markers",
-                            marker=dict(symbol=symbol, size=7, color=mark_col,
-                                        line=dict(color=mark_col, width=1.8),
-                                        opacity=0.92),
+                            marker=dict(
+                                symbol=symbol,
+                                size=8 if is_circle else 7,
+                                # Circle = filled with colour; X = transparent fill, coloured stroke
+                                color=mark_col if is_circle else "rgba(0,0,0,0)",
+                                line=dict(color=mark_col, width=2.0),
+                                opacity=0.90,
+                            ),
                             name=leg_name,
                             legendgroup=leg_key,
                             showlegend=show_m,
@@ -488,7 +501,7 @@ def main():
     st.title("📊 Electrolyzer Whisker — SS316L Corrosion Study")
     st.caption(
         "Left = histogram  ·  Right = box-whisker  ·  "
-        "Colour = subsample folder  ·  Shape = test number  ·  "
+        "Colour = subsample folder  ·  ● circle = Test 1  ·  ✕ x = Test 2  ·  "
         "Click marks to exclude"
     )
 
@@ -544,8 +557,18 @@ def main():
         sd_mult   = st.slider("Outlier × StDev", 1.0, 4.0, 2.0,  0.5)
         log_icorr = st.checkbox("Log₁₀(Icorr)", value=True)
 
+        # Colour + shape key
         st.divider()
-        st.header("🎨 Colour key")
+        st.header("🎨 Mark encoding")
+        st.markdown("**Shape = test number**")
+        st.markdown(
+            '<span style="font-size:15px">●</span>'
+            ' <span style="font-size:12px">Filled circle = Test 1</span><br>'
+            '<span style="font-size:15px">✕</span>'
+            ' <span style="font-size:12px">X mark = Test 2</span>',
+            unsafe_allow_html=True)
+
+        st.markdown("**Colour = subsample folder**")
         groups = [
             ("LC pH 1",[("#E53935","F02 (S60)"),("#B71C1C","F03 (S52,S63)"),
                         ("#F06292","F04 (S53)"),("#FF7043","F05 (S50)"),
@@ -562,15 +585,15 @@ def main():
             st.markdown(f"*{group_title}*")
             for hex_c, label in entries:
                 st.markdown(
-                    f'<span style="color:{hex_c};font-size:17px;font-weight:bold">✕</span>'
+                    f'<span style="color:{hex_c};font-size:17px">●</span>'
                     f' <span style="font-size:11px;color:#333">{label}</span>',
                     unsafe_allow_html=True)
-        st.markdown("**Shape = test**  ·  ✕ T1  ·  ✚ T2")
 
         st.divider()
         st.download_button(
             "⬇ Download filtered CSV",
-            data=df[~df["row_id"].isin(st.session_state.deleted_ids)].to_csv(index=False).encode(),
+            data=df[~df["row_id"].isin(st.session_state.deleted_ids)
+                   ].to_csv(index=False).encode(),
             file_name="electrolyzer_filtered.csv",
             mime="text/csv", use_container_width=True)
 
@@ -582,7 +605,7 @@ def main():
                 file_name="electrolyzer_excluded.csv",
                 mime="text/csv", use_container_width=True)
 
-    # Metrics
+    # ── Metrics ───────────────────────────────────────────────
     df       = st.session_state.df
     param_df = df[df["parameter"] == param]
     active   = param_df[~param_df["row_id"].isin(st.session_state.deleted_ids)]
@@ -593,7 +616,7 @@ def main():
     c3.metric("Excluded",           len(st.session_state.deleted_ids))
     c4.metric("Conditions",         active["condition"].nunique())
 
-    # Plot
+    # ── Plot ──────────────────────────────────────────────────
     fig = make_figure(
         df=df, param=param, pH_filter=pH_filter, dir_filter=dir_filter,
         r2_min=r2_min, sd_mult=sd_mult, log_icorr=log_icorr,
@@ -607,6 +630,7 @@ def main():
              f"{sample_filter}_{len(st.session_state.deleted_ids)}"),
     )
 
+    # Handle clicks — record full metadata
     if event and event.get("selection") and event["selection"].get("points"):
         for pt in event["selection"]["points"]:
             cdata = pt.get("customdata")
@@ -641,19 +665,20 @@ def main():
                         "r2":        r.get("r2", None),
                     }
                 else:
-                    meta = {"row_id":rid,"parameter":param,"sample":samp,"cut":"?",
-                            "condition":"?","pH":ph,"direction":direction,"folder":folder,
-                            "test":test,"point":point,"source":"?","value":raw_val,"r2":None}
+                    meta = {
+                        "row_id":rid,"parameter":param,"sample":samp,"cut":"?",
+                        "condition":"?","pH":ph,"direction":direction,"folder":folder,
+                        "test":test,"point":point,"source":"?","value":raw_val,"r2":None}
                 st.session_state.deleted_ids.add(rid)
                 st.session_state.deleted_meta[rid] = meta
                 st.rerun()
 
     st.caption(
-        "💡 **Colour** = subsample folder  ·  **Shape** = test (✕=T1, ✚=T2)  ·  "
-        "Hover for full details  ·  Click to exclude"
+        "💡 **●** = Test 1 (filled circle)  ·  **✕** = Test 2 (x mark)  ·  "
+        "Colour = subsample folder  ·  Hover for full details  ·  Click to exclude"
     )
 
-    # Excluded points log
+    # ── Excluded points log ───────────────────────────────────
     n_del = len(st.session_state.deleted_ids)
     if n_del > 0:
         st.subheader(f"🗑 Excluded Points  ({n_del})")
@@ -685,16 +710,18 @@ def main():
 
             st.markdown("**Restore individual points:**")
             for rid, meta in list(st.session_state.deleted_meta.items()):
-                label = (f"↺  {meta['parameter']}  ·  {meta['sample']}  ·  "
-                         f"{meta['condition']}  ·  pH {meta['pH']}  ·  "
-                         f"Folder {meta['folder']}  ·  Test {meta['test']}  ·  "
-                         f"Point {meta['point']}  ·  Value = {meta['value']:.5f}")
+                label = (
+                    f"↺  {meta['parameter']}  ·  {meta['sample']}  ·  "
+                    f"{meta['condition']}  ·  pH {meta['pH']}  ·  "
+                    f"Folder {meta['folder']}  ·  Test {meta['test']}  ·  "
+                    f"Point {meta['point']}  ·  Value = {meta['value']:.5f}"
+                )
                 if st.button(label, key=f"restore_{rid}", use_container_width=True):
                     st.session_state.deleted_ids.discard(rid)
                     st.session_state.deleted_meta.pop(rid, None)
                     st.rerun()
 
-    # Stats table
+    # ── Summary statistics table ──────────────────────────────
     st.subheader("📋 Summary Statistics")
 
     sub = df[~df["row_id"].isin(st.session_state.deleted_ids)]
