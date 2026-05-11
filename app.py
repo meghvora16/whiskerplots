@@ -1,7 +1,8 @@
 """
-Electrolyzer Whisker Plot App  v2.0
+Electrolyzer Whisker Plot App  v2.1
 SS316L Corrosion Study
 Layout: LEFT = histogram bars | RIGHT = box-whisker + raw X marks
+X marks coloured by test number
 """
 
 import io, re
@@ -34,6 +35,27 @@ CUT_COL   = {"LC": LC_COL,   "WJ": WJ_COL}
 CUT_FILL  = {"LC": LC_FILL,  "WJ": WJ_FILL}
 CUT_FILL2 = {"LC": LC_FILL2, "WJ": WJ_FILL2}
 
+# Per-cut colour palettes for test numbers
+# Each list entry = colour for test 1, 2, 3, 4, 5 ...
+# LC: shades of red/orange
+# WJ: shades of navy/teal
+TEST_COLOURS = {
+    "LC": [
+        "#C0392B",  # test 1 — dark red
+        "#E67E22",  # test 2 — orange
+        "#8E44AD",  # test 3 — purple
+        "#27AE60",  # test 4 — green
+        "#2C3E50",  # test 5 — charcoal
+    ],
+    "WJ": [
+        "#1F618D",  # test 1 — dark navy
+        "#17A589",  # test 2 — teal
+        "#D35400",  # test 3 — dark orange
+        "#8E44AD",  # test 4 — purple
+        "#27AE60",  # test 5 — green
+    ],
+}
+
 COND_ORDER  = ["AC", "Brushed", "Pickled", "B&P", "BPP"]
 PARAM_UNITS = {
     "OCP1": "V vs. RHE", "OCP2": "V vs. RHE", "OCP3": "V vs. RHE",
@@ -44,18 +66,18 @@ PARAM_UNITS = {
 #  METADATA
 # ─────────────────────────────────────────────────────────────
 SAMPLE_META = {
-    "50":("LC","AC"),   "51":("LC","Brushed"), "52":("LC","Pickled"), "53":("LC","B&P"),
-    "60":("LC","AC"),   "61":("LC","Brushed"), "62":("LC","Pickled"),
-    "63":("LC","B&P"),  "64":("LC","BPP"),
-    "70":("WJ","AC"),   "71":("WJ","Brushed"), "72":("WJ","Pickled"),
-    "73":("WJ","B&P"),  "74":("WJ","BPP"),
+    "50": ("LC","AC"),   "51": ("LC","Brushed"), "52": ("LC","Pickled"), "53": ("LC","B&P"),
+    "60": ("LC","AC"),   "61": ("LC","Brushed"), "62": ("LC","Pickled"),
+    "63": ("LC","B&P"),  "64": ("LC","BPP"),
+    "70": ("WJ","AC"),   "71": ("WJ","Brushed"), "72": ("WJ","Pickled"),
+    "73": ("WJ","B&P"),  "74": ("WJ","BPP"),
 }
 PH_MAP = {
-    "50":{"01":4,"05":1}, "51":{"02":4}, "52":{"03":1,"10":4}, "53":{"01":4,"04":1},
-    "60":{"02":1,"10":4}, "61":{"02":4}, "62":{"03":4},
-    "63":{"01":4,"03":1,"05":4}, "64":{"01":4,"05":4,"09":1},
-    "70":{"02":4,"03":1}, "71":{"02":4}, "72":{"07":1,"10":4},
-    "73":{"01":4,"03":1,"09":4}, "74":{"01":4,"03":4,"05":4,"06":1},
+    "50": {"01":4,"05":1}, "51": {"02":4}, "52": {"03":1,"10":4}, "53": {"01":4,"04":1},
+    "60": {"02":1,"10":4}, "61": {"02":4}, "62": {"03":4},
+    "63": {"01":4,"03":1,"05":4}, "64": {"01":4,"05":4,"09":1},
+    "70": {"02":4,"03":1}, "71": {"02":4}, "72": {"07":1,"10":4},
+    "73": {"01":4,"03":1,"09":4}, "74": {"01":4,"03":4,"05":4,"06":1},
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -112,12 +134,16 @@ def load_uploaded(lsv_bytes, ocp_bytes):
         for pcol, pname in param_map.items():
             if pd.isna(r[pcol]): continue
             rows.append({
-                "sample": f"S{r['sample']}", "cut": r["cut"],
+                "sample":    f"S{r['sample']}",
+                "cut":       r["cut"],
                 "condition": r["condition"],
-                "pH": int(r["pH"]), "direction": str(r["scan_direction"]),
-                "parameter": pname, "value": float(r[pcol]),
-                "r2": float(r["R2_log"]) if not pd.isna(r["R2_log"]) else None,
-                "row_id": f"lsv_{r.name}_{pcol}",
+                "pH":        int(r["pH"]),
+                "direction": str(r["scan_direction"]),
+                "parameter": pname,
+                "value":     float(r[pcol]),
+                "r2":        float(r["R2_log"]) if not pd.isna(r["R2_log"]) else None,
+                "test":      str(r["test"]) if not pd.isna(r["test"]) else "1",
+                "row_id":    f"lsv_{r.name}_{pcol}",
             })
 
     main_ocp = ocp_raw[ocp_raw["sample"].isin(SAMPLE_META) & ocp_raw["pH"].notna()].copy()
@@ -126,11 +152,16 @@ def load_uploaded(lsv_bytes, ocp_bytes):
         n = str(r["ocp_num"]).strip()
         ocp_lbl = f"OCP{n}" if n else "OCP1"
         rows.append({
-            "sample": f"S{r['sample']}", "cut": r["cut"],
+            "sample":    f"S{r['sample']}",
+            "cut":       r["cut"],
             "condition": r["condition"],
-            "pH": int(r["pH"]), "direction": str(r["direction"]),
-            "parameter": ocp_lbl, "value": float(r["last_voltage_v"]),
-            "r2": None, "row_id": f"ocp_{r.name}_{n}",
+            "pH":        int(r["pH"]),
+            "direction": str(r["direction"]),
+            "parameter": ocp_lbl,
+            "value":     float(r["last_voltage_v"]),
+            "r2":        None,
+            "test":      str(r["test"]) if not pd.isna(r["test"]) else "1",
+            "row_id":    f"ocp_{r.name}_{n}",
         })
 
     return pd.DataFrame(rows)
@@ -150,9 +181,10 @@ def load_prefilled():
         raw["pH"]      = pd.to_numeric(raw["pH"],    errors="coerce")
         raw["value"]   = pd.to_numeric(raw["value"], errors="coerce")
         raw["r2"]      = pd.to_numeric(raw["r2"],    errors="coerce")
+        raw["test"]    = raw["test"].fillna("1").astype(str)
         raw            = raw[raw["value"].notna()]
         return raw[["sample","cut","condition","pH","direction",
-                    "parameter","value","r2","row_id"]].copy()
+                    "parameter","value","r2","test","row_id"]].copy()
     except Exception:
         return None
 
@@ -180,17 +212,22 @@ def compute_stats(vals: np.ndarray, sd_mult: float):
     return dict(n=n, q1=q1, med=med, q3=q3,
                 lo=lo_w, hi=hi_w,
                 mean=clean.mean(), sd=sd,
-                outliers=outliers, clean=clean,
-                raw=s)
+                outliers=outliers, clean=clean, raw=s)
+
+# ─────────────────────────────────────────────────────────────
+#  HELPER: get colour for a test number within a cut type
+# ─────────────────────────────────────────────────────────────
+def test_colour(cut: str, test_num: str, all_tests: list) -> str:
+    """Return a colour for this test number, cycling through the palette."""
+    palette = TEST_COLOURS.get(cut, TEST_COLOURS["LC"])
+    try:
+        idx = sorted(all_tests).index(test_num)
+    except ValueError:
+        idx = 0
+    return palette[idx % len(palette)]
 
 # ─────────────────────────────────────────────────────────────
 #  MAIN FIGURE
-#
-#  X-axis layout per condition-slot (width = 1 unit):
-#    [0.0 – 0.50]  LC histogram   (bars extend LEFT from x=0.48)
-#    [0.50 – 1.00] WJ histogram   (bars extend LEFT from x=0.98)
-#    Box panel is drawn to the RIGHT of all histogram slots:
-#    one LC box and one WJ box per condition, stacked tightly.
 # ─────────────────────────────────────────────────────────────
 def make_figure(df, param, pH_filter, dir_filter,
                 r2_min, sd_mult, log_icorr,
@@ -214,11 +251,18 @@ def make_figure(df, param, pH_filter, dir_filter,
         sub = sub[sub["value"] > 0].copy()
         sub["value"] = np.log10(sub["value"])
 
-    unit  = PARAM_UNITS.get(param, "")
-    ylabel = f"log₁₀(icorr)  [{unit}]" if (param == "Icorr" and log_icorr) else f"{param}  [{unit}]"
+    # Ensure test column exists
+    if "test" not in sub.columns:
+        sub["test"] = "1"
+    sub["test"] = sub["test"].fillna("1").astype(str)
 
-    conds  = [c for c in COND_ORDER if c in sub["condition"].unique()]
-    n_c    = len(conds)
+    unit   = PARAM_UNITS.get(param, "")
+    ylabel = (f"log₁₀(icorr)  [{unit}]"
+              if (param == "Icorr" and log_icorr)
+              else f"{param}  [{unit}]")
+
+    conds = [c for c in COND_ORDER if c in sub["condition"].unique()]
+    n_c   = len(conds)
 
     fig = go.Figure()
 
@@ -237,39 +281,37 @@ def make_figure(df, param, pH_filter, dir_filter,
     y_hi  = y_max + y_pad
 
     # ── Layout constants ──────────────────────────────────────
-    # Each condition occupies `slot` units on the X axis.
-    # Inside each slot: LC half (left) + WJ half (right).
-    # Box region sits to the right of the histogram region.
-    slot        = 1.0        # width of one condition slot
-    cut_half    = slot / 2   # LC = [cx, cx+0.5), WJ = [cx+0.5, cx+1)
+    slot       = 1.0
+    cut_half   = slot / 2
+    box_gap    = 0.15
+    box_slot   = 0.65
+    box_box_w  = 0.13
+    hist_max_w = cut_half * 0.80
+    nbins      = 10
 
-    # Box region: starts after all histogram slots
-    box_gap     = 0.15       # gap between hist and box regions
-    box_slot    = 0.65       # width of one condition's box pair
-    box_box_w   = 0.13       # half-width of each box
-
-    hist_max_w  = cut_half * 0.80   # max bar length (toward left of each half)
-    nbins       = 10
-
-    rng_y       = y_hi - y_lo
-
-    # Precompute bin edges (shared across all panels for alignment)
     bin_edges = np.linspace(y_lo, y_hi, nbins + 1)
 
-    added_legend = set()
+    # Collect all test numbers across the whole dataset for consistent colouring
+    all_tests_lc = sorted(sub[sub["cut"] == "LC"]["test"].unique().tolist())
+    all_tests_wj = sorted(sub[sub["cut"] == "WJ"]["test"].unique().tolist())
+    all_tests_by_cut = {"LC": all_tests_lc, "WJ": all_tests_wj}
+
+    # Track which legend entries have been added
+    added_box_legend  = set()   # "LC" / "WJ" for box outline legend
+    added_test_legend = set()   # "LC_T1", "WJ_T2" etc. for test colour legend
+
     tick_hist_vals, tick_hist_text = [], []
     tick_box_vals,  tick_box_text  = [], []
 
     for ci, cond in enumerate(conds):
-        hist_cx = ci * slot          # left edge of this condition's histogram slot
-        box_cx  = n_c * slot + box_gap + ci * box_slot  # left edge of this condition's box pair
+        hist_cx = ci * slot
+        box_cx  = n_c * slot + box_gap + ci * box_slot
 
         tick_hist_vals.append(hist_cx + cut_half)
         tick_hist_text.append(cond)
         tick_box_vals.append(box_cx + box_slot / 2)
         tick_box_text.append(cond)
 
-        # Vertical separator between conditions (histogram area)
         if ci > 0:
             fig.add_shape(type="line",
                 x0=hist_cx, x1=hist_cx, y0=y_lo, y1=y_hi,
@@ -280,15 +322,13 @@ def make_figure(df, param, pH_filter, dir_filter,
             fill  = CUT_FILL[cut]
             fill2 = CUT_FILL2[cut]
 
-            csub  = sub[(sub["condition"] == cond) & (sub["cut"] == cut)]
-            vals  = csub["value"].dropna().values
-            rids  = csub["row_id"].values
+            csub = sub[(sub["condition"] == cond) & (sub["cut"] == cut)]
+            vals = csub["value"].dropna().values
+            rids = csub["row_id"].values
 
-            show_leg = cut not in added_legend
+            show_box_leg = cut not in added_box_legend
 
             # ── HISTOGRAM (left panel) ────────────────────────
-            # LC: right edge at hist_cx + 0.48, bars grow LEFT
-            # WJ: right edge at hist_cx + 0.98, bars grow LEFT
             bar_right = hist_cx + (ki + 1) * cut_half - 0.02
 
             if len(vals) > 0:
@@ -303,57 +343,63 @@ def make_figure(df, param, pH_filter, dir_filter,
                     by_lo   = bin_edges[bi]
                     by_hi   = bin_edges[bi + 1]
                     bx_lo   = bar_right - bar_len
-                    bx_hi   = bar_right
 
                     fig.add_shape(type="rect",
-                        x0=bx_lo, x1=bx_hi,
+                        x0=bx_lo, x1=bar_right,
                         y0=by_lo, y1=by_hi,
                         fillcolor=fill2,
                         line=dict(color=col, width=0.7),
                         layer="below")
 
-                # Baseline for this cut's histogram
                 fig.add_shape(type="line",
-                    x0=bar_right, x1=bar_right,
-                    y0=y_lo, y1=y_hi,
+                    x0=bar_right, x1=bar_right, y0=y_lo, y1=y_hi,
                     line=dict(color=col, width=0.8, dash="dot"))
 
             # ── BOX-WHISKER + X MARKS (right panel) ──────────
-            # LC box at box_cx + 0.18, WJ box at box_cx + 0.47
             bx = box_cx + 0.18 + ki * 0.29
 
             if len(vals) == 0:
-                # invisible trace for legend
-                if show_leg:
+                if show_box_leg:
                     fig.add_trace(go.Scatter(
                         x=[None], y=[None], mode="markers",
-                        name=cut,
-                        marker=dict(color=col, size=8),
-                        legendgroup=cut, showlegend=True,
+                        name=f"{cut} (box)",
+                        marker=dict(color=col, size=8, symbol="square"),
+                        legendgroup=f"box_{cut}",
+                        legendgrouptitle=dict(text="Cut type") if cut == "LC" else {},
+                        showlegend=True,
                     ))
-                    added_legend.add(cut)
+                    added_box_legend.add(cut)
                 continue
 
             st_ = compute_stats(vals, sd_mult)
             if st_ is None:
                 continue
 
-            if show_leg:
-                added_legend.add(cut)
+            # Box legend entry (square marker, cut colour)
+            if show_box_leg:
+                fig.add_trace(go.Scatter(
+                    x=[None], y=[None], mode="markers",
+                    name=f"{cut} (box/hist)",
+                    marker=dict(color=col, size=9, symbol="square",
+                                line=dict(color=col, width=1)),
+                    legendgroup=f"box_{cut}",
+                    showlegend=True,
+                ))
+                added_box_legend.add(cut)
 
             # Whisker lines
             fig.add_shape(type="line",
                 x0=bx, x1=bx, y0=st_["q3"], y1=st_["hi"],
                 line=dict(color=col, width=1.5))
-            fig.add_shape(type="line",           # upper cap
-                x0=bx - box_box_w * 0.7, x1=bx + box_box_w * 0.7,
+            fig.add_shape(type="line",
+                x0=bx - box_box_w*0.7, x1=bx + box_box_w*0.7,
                 y0=st_["hi"], y1=st_["hi"],
                 line=dict(color=col, width=1.8))
             fig.add_shape(type="line",
                 x0=bx, x1=bx, y0=st_["lo"], y1=st_["q1"],
                 line=dict(color=col, width=1.5))
-            fig.add_shape(type="line",           # lower cap
-                x0=bx - box_box_w * 0.7, x1=bx + box_box_w * 0.7,
+            fig.add_shape(type="line",
+                x0=bx - box_box_w*0.7, x1=bx + box_box_w*0.7,
                 y0=st_["lo"], y1=st_["lo"],
                 line=dict(color=col, width=1.8))
 
@@ -369,17 +415,17 @@ def make_figure(df, param, pH_filter, dir_filter,
                 y0=st_["med"], y1=st_["med"],
                 line=dict(color=col, width=2.8))
 
-            # Mean marker (open circle)
+            # Mean marker
             fig.add_trace(go.Scatter(
                 x=[bx], y=[st_["mean"]],
                 mode="markers",
                 marker=dict(symbol="circle-open", size=10, color=col,
                             line=dict(color=col, width=2.0)),
-                legendgroup=cut, showlegend=False,
-                hovertemplate=f"<b>Mean ({cut} – {cond})</b>: %{{y:.4f}}<extra></extra>",
+                legendgroup=f"box_{cut}", showlegend=False,
+                hovertemplate=f"<b>Mean ({cut}–{cond})</b>: %{{y:.4f}}<extra></extra>",
             ))
 
-            # Outlier dots (open circles, beyond whiskers)
+            # Outlier dots
             if len(st_["outliers"]) > 0:
                 fig.add_trace(go.Scatter(
                     x=[bx] * len(st_["outliers"]),
@@ -387,35 +433,55 @@ def make_figure(df, param, pH_filter, dir_filter,
                     mode="markers",
                     marker=dict(symbol="circle-open", size=8, color=col,
                                 line=dict(color=col, width=1.5)),
-                    legendgroup=cut, showlegend=False,
+                    legendgroup=f"box_{cut}", showlegend=False,
                     hovertemplate=f"<b>Outlier ({cut})</b>: %{{y:.4f}}<extra></extra>",
                 ))
 
-            # X raw data marks — overlaid ON the box, with jitter
-            n_pts  = len(vals)
-            rng_x  = box_box_w * 0.65
-            np.random.seed(42)
-            jitter = np.random.uniform(-rng_x, rng_x, n_pts)
+            # ── X marks coloured by test number ──────────────
+            all_tests = all_tests_by_cut[cut]
+            test_groups = csub.groupby("test")
 
-            fig.add_trace(go.Scatter(
-                x=(bx + jitter).tolist(),
-                y=vals.tolist(),
-                mode="markers",
-                marker=dict(symbol="x", size=6, color=col,
-                            line=dict(color=col, width=1.5),
-                            opacity=0.75),
-                name=cut if show_leg else None,
-                legendgroup=cut,
-                showlegend=show_leg,
-                customdata=rids,
-                hovertemplate=(
-                    f"<b>{cut} — {cond}</b><br>"
-                    "Value: %{y:.5f}<br>"
-                    "<i>Click to exclude</i><extra></extra>"
-                ),
-            ))
+            np.random.seed(42 + ki * 100 + ci * 10)
+            rng_x = box_box_w * 0.65
 
-            # n= label below each box
+            for test_num, tgroup in test_groups:
+                tvals = tgroup["value"].dropna().values
+                trids = tgroup["row_id"].values
+                if len(tvals) == 0:
+                    continue
+
+                t_col    = test_colour(cut, str(test_num), all_tests)
+                leg_key  = f"{cut}_T{test_num}"
+                show_t   = leg_key not in added_test_legend
+
+                jitter   = np.random.uniform(-rng_x, rng_x, len(tvals))
+
+                fig.add_trace(go.Scatter(
+                    x=(bx + jitter).tolist(),
+                    y=tvals.tolist(),
+                    mode="markers",
+                    marker=dict(
+                        symbol="x",
+                        size=7,
+                        color=t_col,
+                        line=dict(color=t_col, width=1.8),
+                        opacity=0.85,
+                    ),
+                    name=f"{cut} Test {test_num}",
+                    legendgroup=f"test_{cut}_T{test_num}",
+                    showlegend=show_t,
+                    customdata=trids,
+                    hovertemplate=(
+                        f"<b>{cut} — {cond} — Test {test_num}</b><br>"
+                        "Value: %{y:.5f}<br>"
+                        "<i>Click to exclude</i><extra></extra>"
+                    ),
+                ))
+
+                if show_t:
+                    added_test_legend.add(leg_key)
+
+            # n= label
             fig.add_annotation(
                 x=bx, y=y_lo - y_pad * 0.55,
                 text=f"n={st_['n']}",
@@ -424,21 +490,19 @@ def make_figure(df, param, pH_filter, dir_filter,
                 xanchor="center",
             )
 
-    # ── Vertical divider between histogram and box regions ────
+    # Divider between histogram and box regions
     div_x = n_c * slot + box_gap * 0.4
     fig.add_shape(type="line",
         x0=div_x, x1=div_x, y0=y_lo, y1=y_hi,
         line=dict(color="#8899BB", width=1.2))
 
-    # ── Axis tick config ──────────────────────────────────────
     all_tick_vals = tick_hist_vals + tick_box_vals
     all_tick_text = tick_hist_text + tick_box_text
 
     pH_str     = f"pH {pH_filter}" if pH_filter != "Both" else "pH 1 & 4"
-    dir_str    = (f" | {dir_filter}" if not is_ocp and dir_filter != "Both" else "")
+    dir_str    = f" | {dir_filter}" if not is_ocp and dir_filter != "Both" else ""
     sample_str = f" | {sample_filter}" if sample_filter else ""
-
-    x_end = n_c * slot + box_gap + n_c * box_slot + 0.1
+    x_end      = n_c * slot + box_gap + n_c * box_slot + 0.1
 
     fig.update_layout(
         title=dict(
@@ -453,7 +517,6 @@ def make_figure(df, param, pH_filter, dir_filter,
             showgrid=False,
             zeroline=False,
             range=[-0.08, x_end],
-            # Add region labels via annotations
         ),
         yaxis=dict(
             title=dict(text=ylabel, font=dict(size=11, color="#333")),
@@ -465,24 +528,24 @@ def make_figure(df, param, pH_filter, dir_filter,
             zerolinewidth=0.8,
         ),
         legend=dict(
-            title=dict(text="Cut type", font=dict(size=10)),
+            title=dict(text="Legend", font=dict(size=10)),
             orientation="v",
             x=1.01, y=0.98,
             bgcolor="rgba(248,250,252,0.92)",
             bordercolor="#C0CAD8",
             borderwidth=1,
-            font=dict(size=11),
+            font=dict(size=10),
+            tracegroupgap=6,
         ),
         plot_bgcolor="white",
         paper_bgcolor="white",
         height=520,
-        margin=dict(l=72, r=130, t=65, b=72),
+        margin=dict(l=72, r=160, t=65, b=72),
         clickmode="event",
     )
 
-    # Region header annotations
+    # Region labels
     if n_c > 0:
-        # "Distribution" label over histogram region
         fig.add_annotation(
             x=(n_c * slot) / 2 - 0.3, y=y_hi + y_pad * 0.08,
             text="◀  Distribution (histogram)",
@@ -490,7 +553,6 @@ def make_figure(df, param, pH_filter, dir_filter,
             font=dict(size=9.5, color="#667799"),
             xanchor="center",
         )
-        # "Box & Whisker" label over box region
         fig.add_annotation(
             x=n_c * slot + box_gap + (n_c * box_slot) / 2,
             y=y_hi + y_pad * 0.08,
@@ -509,25 +571,28 @@ def make_figure(df, param, pH_filter, dir_filter,
 def main():
     st.markdown("""
     <style>
-    .block-container{padding-top:1rem}
-    h1{color:#2E4057;font-size:1.55rem}
+    .block-container { padding-top: 1rem; }
+    h1 { color: #2E4057; font-size: 1.55rem; }
     </style>""", unsafe_allow_html=True)
 
     st.title("📊 Electrolyzer Whisker — SS316L Corrosion Study")
-    st.caption("Left panel = histogram | Right panel = box-whisker with raw X marks | Click X marks to exclude points")
+    st.caption(
+        "Left = histogram  ·  Right = box-whisker with X marks coloured by test number  ·  "
+        "Click X marks to exclude points"
+    )
 
-    # ── Session state ─────────────────────────────────────────
-    if "deleted_ids"  not in st.session_state: st.session_state.deleted_ids  = set()
-    if "df"           not in st.session_state: st.session_state.df           = None
+    if "deleted_ids" not in st.session_state:
+        st.session_state.deleted_ids = set()
+    if "df" not in st.session_state:
+        st.session_state.df = None
 
-    # ── Sidebar ───────────────────────────────────────────────
     with st.sidebar:
         st.header("📂 Data source")
         src = st.radio("Load from:", ["Pre-filled Excel", "Upload raw files"])
 
         if src == "Upload raw files":
-            lf = st.file_uploader("batch_fit_summary.xlsx",     type=["xlsx"])
-            of = st.file_uploader("ocp_summary_samples.xlsx",   type=["xlsx"])
+            lf = st.file_uploader("batch_fit_summary.xlsx",   type=["xlsx"])
+            of = st.file_uploader("ocp_summary_samples.xlsx", type=["xlsx"])
             if lf and of:
                 with st.spinner("Parsing…"):
                     st.session_state.df = load_uploaded(lf.read(), of.read())
@@ -539,7 +604,10 @@ def main():
                 if st.session_state.df is not None:
                     st.success(f"{len(st.session_state.df):,} rows loaded")
                 else:
-                    st.warning("Place ElectrolyzerWhisker_Final.xlsx in the app folder, or upload files above.")
+                    st.warning(
+                        "Place ElectrolyzerWhisker_Final.xlsx in the app folder, "
+                        "or upload files above."
+                    )
 
         if st.session_state.df is None:
             st.stop()
@@ -550,23 +618,42 @@ def main():
         st.header("⚙ Filters")
 
         params_av = sorted(df["parameter"].unique())
-        param = st.selectbox("Parameter",  params_av,
-            index=params_av.index("OCP1") if "OCP1" in params_av else 0)
+        param = st.selectbox(
+            "Parameter", params_av,
+            index=params_av.index("OCP1") if "OCP1" in params_av else 0
+        )
 
         pH_opts   = ["Both"] + sorted(str(p) for p in df["pH"].dropna().unique())
         pH_filter = st.selectbox("pH", pH_opts)
 
-        is_ocp = param.startswith("OCP")
-        dir_filter = "Both" if is_ocp else st.selectbox("Direction", ["Both","Anodic","Cathodic"])
+        is_ocp     = param.startswith("OCP")
+        dir_filter = ("Both" if is_ocp
+                      else st.selectbox("Direction", ["Both","Anodic","Cathodic"]))
 
-        samp_opts    = [""] + sorted(df["sample"].unique())
-        sample_filter= st.selectbox("Sample (blank = all)", samp_opts)
+        samp_opts     = [""] + sorted(df["sample"].unique())
+        sample_filter = st.selectbox("Sample (blank = all)", samp_opts)
 
         st.divider()
         st.header("📐 Statistics")
         r2_min    = st.slider("R² minimum",      0.0, 1.0, 0.90, 0.01)
         sd_mult   = st.slider("Outlier × StDev", 1.0, 4.0, 2.0,  0.5)
-        log_icorr = st.checkbox("Log₁₀(Icorr)",  value=True)
+        log_icorr = st.checkbox("Log₁₀(Icorr)", value=True)
+
+        # Show test colour legend info
+        st.divider()
+        st.header("🎨 Test colours")
+        st.markdown("**LC (red family)**")
+        for i, c in enumerate(TEST_COLOURS["LC"][:3], 1):
+            st.markdown(
+                f'<span style="color:{c}; font-size:18px">✕</span> Test {i}',
+                unsafe_allow_html=True
+            )
+        st.markdown("**WJ (blue family)**")
+        for i, c in enumerate(TEST_COLOURS["WJ"][:3], 1):
+            st.markdown(
+                f'<span style="color:{c}; font-size:18px">✕</span> Test {i}',
+                unsafe_allow_html=True
+            )
 
         st.divider()
         st.header("🗑 Excluded points")
@@ -585,21 +672,22 @@ def main():
             "⬇ Download filtered CSV",
             data=filtered_df.to_csv(index=False).encode(),
             file_name="electrolyzer_filtered.csv",
-            mime="text/csv", use_container_width=True,
+            mime="text/csv",
+            use_container_width=True,
         )
 
-    # ── Metrics ───────────────────────────────────────────────
-    df = st.session_state.df
+    # Metrics
+    df       = st.session_state.df
     param_df = df[df["parameter"] == param]
     active   = param_df[~param_df["row_id"].isin(st.session_state.deleted_ids)]
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total (this param)",  len(param_df))
-    c2.metric("Active",              len(active))
-    c3.metric("Excluded",            len(st.session_state.deleted_ids))
-    c4.metric("Conditions",          active["condition"].nunique())
+    c1.metric("Total (this param)", len(param_df))
+    c2.metric("Active",             len(active))
+    c3.metric("Excluded",           len(st.session_state.deleted_ids))
+    c4.metric("Conditions",         active["condition"].nunique())
 
-    # ── Plot ──────────────────────────────────────────────────
+    # Plot
     fig = make_figure(
         df=df, param=param, pH_filter=pH_filter, dir_filter=dir_filter,
         r2_min=r2_min, sd_mult=sd_mult, log_icorr=log_icorr,
@@ -610,10 +698,10 @@ def main():
     event = st.plotly_chart(
         fig, use_container_width=True,
         on_select="rerun",
-        key=f"chart_{param}_{pH_filter}_{dir_filter}_{sample_filter}_{len(st.session_state.deleted_ids)}",
+        key=(f"chart_{param}_{pH_filter}_{dir_filter}_"
+             f"{sample_filter}_{len(st.session_state.deleted_ids)}"),
     )
 
-    # Handle point clicks
     if event and event.get("selection") and event["selection"].get("points"):
         for pt in event["selection"]["points"]:
             cdata = pt.get("customdata")
@@ -623,9 +711,13 @@ def main():
                     st.session_state.deleted_ids.add(rid)
                     st.rerun()
 
-    st.caption("💡 Click any **✕ mark** to exclude that point — statistics and whiskers update instantly.")
+    st.caption(
+        "💡 Click any **✕ mark** to exclude that point — "
+        "each cut's statistics and whiskers update instantly. "
+        "X mark colour = test number."
+    )
 
-    # ── Stats table ───────────────────────────────────────────
+    # Stats table
     st.subheader("📋 Summary Statistics")
 
     sub = df[~df["row_id"].isin(st.session_state.deleted_ids)]
@@ -642,15 +734,21 @@ def main():
         sub = sub[sub["value"] > 0].copy()
         sub["value"] = np.log10(sub["value"])
 
-    rows = []
+    stat_rows = []
     for cond in COND_ORDER:
         for cut in ["LC", "WJ"]:
-            vals = sub[(sub["condition"] == cond) & (sub["cut"] == cut)]["value"].dropna().values
-            if len(vals) == 0: continue
+            vals = sub[
+                (sub["condition"] == cond) & (sub["cut"] == cut)
+            ]["value"].dropna().values
+            if len(vals) == 0:
+                continue
             st_ = compute_stats(vals, sd_mult)
-            if st_ is None: continue
-            rows.append({
-                "Condition": cond, "Cut": cut, "n": st_["n"],
+            if st_ is None:
+                continue
+            stat_rows.append({
+                "Condition":  cond,
+                "Cut":        cut,
+                "n":          st_["n"],
                 "n_outlier":  len(st_["outliers"]),
                 "Min":        round(float(st_["clean"].min()), 5),
                 "Q1":         round(float(st_["q1"]),          5),
@@ -663,13 +761,17 @@ def main():
                 "Hi_Whisker": round(float(st_["hi"]),          5),
             })
 
-    if rows:
-        sdf = pd.DataFrame(rows)
-        def _color(row):
+    if stat_rows:
+        sdf = pd.DataFrame(stat_rows)
+        def _color_row(row):
             bg = "#FAD7D3" if row["Cut"] == "LC" else "#D0E8F7"
-            return [f"background-color:{bg}" if i == 1 else "" for i in range(len(row))]
-        st.dataframe(sdf.style.apply(_color, axis=1),
-                     use_container_width=True, height=300)
+            return [f"background-color:{bg}" if i == 1 else ""
+                    for i in range(len(row))]
+        st.dataframe(
+            sdf.style.apply(_color_row, axis=1),
+            use_container_width=True,
+            height=300,
+        )
     else:
         st.info("No data for the selected filters.")
 
