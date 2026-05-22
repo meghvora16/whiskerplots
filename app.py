@@ -1,21 +1,23 @@
 """
-Electrolyzer Whisker Plot App  v3.1
+Electrolyzer Whisker Plot App  v3.2
 SS316L Corrosion Study
 
 Upload files:
   • batch_fit_summary.xlsx  (sheet: LSV)
   • ocp_summary.xlsx        (sheet: Sheet1)
 
-Changes v3.1:
-  - Complete PH_MAP rebuilt from Summary_TestCondition_v3.xlsx
-    (adds S61_04, S61_06, S62_06, S62_09, S62_10, S63_04,
-     S64_27, S64_29, S73_04, S73_07 — was missing these)
-  - Corrected pH: S52_03 → pH1 (was pH4), S63_03 → pH1 (was pH4),
-    S63_05 → pH1 (was pH4), S64_01 → pH1 (was pH4),
-    S64_09 → pH4 (was pH1), S73_01 → pH1 (was pH4),
-    S73_09 → pH1 (was pH4)
-  - FOLDER_COLOURS extended for all new combos
-  - Dynamic box offsets: single cut → centred, both → offset ±0.22
+Changes v3.1: Complete PH_MAP rebuilt — adds S61_04, S61_06,
+  S62_06, S62_09, S62_10, S63_04, S64_27, S64_29, S73_04, S73_07.
+  Corrected pH for S52_03, S63_03, S63_05, S64_01, S64_09,
+  S73_01, S73_09.
+
+Changes v3.2: Outlier markers redesigned for non-technical audience.
+  - Solid orange diamond marker (⬥) — universally reads as "unusual"
+  - Plain-language hover: "Unusual value — not in box statistics"
+  - ⚠ badge annotation next to each outlier group
+  - "⚠ Unusual value" entry in legend
+  - Single cut → centred box (no offset)
+  - No ghost LC/WJ labels for absent cuts
 """
 
 import io, re
@@ -31,45 +33,44 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+OUTLIER_COL = "#FF6D00"   # deep orange = universal "caution/unusual"
+
 # ─────────────────────────────────────────────────────────────
-#  COLOURS  (cut × pH × folder)
+#  COLOURS
 # ─────────────────────────────────────────────────────────────
 FOLDER_COLOURS = {
     # LC pH 1 — red family
-    ("LC","1","01"): "#FF1744",   # S60_01, S64_01 (corrected to pH1)
-    ("LC","1","02"): "#E53935",   # S60_02
-    ("LC","1","03"): "#B71C1C",   # S52_03(corrected), S63_03(corrected)
-    ("LC","1","04"): "#F06292",   # S53_04, S63_04
-    ("LC","1","05"): "#FF7043",   # S50_05, S63_05(corrected)
-    ("LC","1","06"): "#E040FB",   # S61_06, S62_06
-    ("LC","1","09"): "#7B1FA2",   # S64_09 (corrected to pH1 → kept purple)
-
-    # LC pH 4 — orange/amber/warm family
-    ("LC","4","01"): "#FB8C00",   # S50_01, S53_01, S63_01, S64_01 (now only S50,53,63)
-    ("LC","4","02"): "#F9A825",   # S51_02, S61_02
-    ("LC","4","03"): "#FFD600",   # S63_03 (now pH1 corrected), S64_03
-    ("LC","4","04"): "#FFAB40",   # S61_04
-    ("LC","4","05"): "#FDD835",   # S63_05(corrected pH1), S64_05
-    ("LC","4","09"): "#A5D6A7",   # S64_09 (corrected to pH4)
-    ("LC","4","10"): "#A1887F",   # S52_10, S60_10
-    ("LC","4","27"): "#26C6DA",   # S64_27  ← NEW
-    ("LC","4","29"): "#00BFA5",   # S64_29  ← NEW
-
+    ("LC","1","01"): "#FF1744",
+    ("LC","1","02"): "#E53935",
+    ("LC","1","03"): "#B71C1C",
+    ("LC","1","04"): "#F06292",
+    ("LC","1","05"): "#FF7043",
+    ("LC","1","06"): "#E040FB",
+    ("LC","1","09"): "#7B1FA2",
+    # LC pH 4 — orange/amber family
+    ("LC","4","01"): "#FB8C00",
+    ("LC","4","02"): "#F9A825",
+    ("LC","4","03"): "#FFD600",
+    ("LC","4","04"): "#FFAB40",
+    ("LC","4","05"): "#FDD835",
+    ("LC","4","09"): "#A5D6A7",
+    ("LC","4","10"): "#A1887F",
+    ("LC","4","27"): "#26C6DA",
+    ("LC","4","29"): "#00BFA5",
     # WJ pH 1 — dark blue/violet family
-    ("WJ","1","01"): "#0D47A1",   # S73_01 (corrected to pH1)
-    ("WJ","1","03"): "#1565C0",   # S70_03, S73_03 (corrected to pH1)
-    ("WJ","1","06"): "#283593",   # S74_06
-    ("WJ","1","07"): "#4527A0",   # S72_07
-
+    ("WJ","1","01"): "#0D47A1",
+    ("WJ","1","03"): "#1565C0",
+    ("WJ","1","06"): "#283593",
+    ("WJ","1","07"): "#4527A0",
     # WJ pH 4 — teal/green/cyan family
-    ("WJ","4","01"): "#00897B",   # S73_01(now pH1), S74_01
-    ("WJ","4","02"): "#00ACC1",   # S70_02, S71_02
-    ("WJ","4","03"): "#43A047",   # S74_03
-    ("WJ","4","04"): "#F57C00",   # S73_04 ← NEW
-    ("WJ","4","05"): "#7CB342",   # S74_05
-    ("WJ","4","07"): "#8D6E63",   # S73_07 ← NEW
-    ("WJ","4","09"): "#26A69A",   # S73_09 (corrected to pH1 → reassigned)
-    ("WJ","4","10"): "#0288D1",   # S72_10
+    ("WJ","4","01"): "#00897B",
+    ("WJ","4","02"): "#00ACC1",
+    ("WJ","4","03"): "#43A047",
+    ("WJ","4","04"): "#F57C00",
+    ("WJ","4","05"): "#7CB342",
+    ("WJ","4","07"): "#8D6E63",
+    ("WJ","4","09"): "#26A69A",
+    ("WJ","4","10"): "#0288D1",
 }
 FALLBACK_COLOUR = "#9E9E9E"
 TEST_SYMBOL     = {"1": "circle", "2": "x", "3": "diamond", "4": "square"}
@@ -82,32 +83,29 @@ PARAM_UNITS = {
     "OCP1":"V vs. RHE","OCP2":"V vs. RHE","OCP3":"V vs. RHE",
     "Ecorr":"V vs. RHE","Icorr":"A dm⁻²","Epp":"V vs. RHE",
 }
-
 SAMPLE_META = {
-    "50":("LC","AC"),   "51":("LC","Brushed"), "52":("LC","Pickled"),  "53":("LC","B&P"),
-    "60":("LC","AC"),   "61":("LC","Brushed"), "62":("LC","Pickled"),
-    "63":("LC","B&P"),  "64":("LC","BPP"),
-    "70":("WJ","AC"),   "71":("WJ","Brushed"), "72":("WJ","Pickled"),
-    "73":("WJ","B&P"),  "74":("WJ","BPP"),
+    "50":("LC","AC"),  "51":("LC","Brushed"),"52":("LC","Pickled"),"53":("LC","B&P"),
+    "60":("LC","AC"),  "61":("LC","Brushed"),"62":("LC","Pickled"),
+    "63":("LC","B&P"), "64":("LC","BPP"),
+    "70":("WJ","AC"),  "71":("WJ","Brushed"),"72":("WJ","Pickled"),
+    "73":("WJ","B&P"), "74":("WJ","BPP"),
 }
 
-# ── Complete PH_MAP rebuilt from Summary_TestCondition_v3.xlsx ──
-# medium "Aqueous Solution H2SO4" → pH 1
-# medium "1:500 H2SO4" / "Master Solution ..." → pH 4
+# Complete PH_MAP from Summary_TestCondition_v3.xlsx
 PH_MAP = {
     "50": {"01":4, "05":1},
     "51": {"02":4},
-    "52": {"03":1, "10":4},          # 52_03 corrected to pH1 (H2SO4)
+    "52": {"03":1, "10":4},
     "53": {"01":4, "04":1},
     "60": {"02":1, "10":4},
-    "61": {"02":4, "04":4, "06":1},  # 61_04 and 61_06 added
-    "62": {"06":1, "09":4, "10":4},  # 62_06, 62_09, 62_10 added; 62_03 removed (not in data)
-    "63": {"01":4, "03":1, "04":4, "05":1},  # 63_04 added; 63_03→pH1, 63_05→pH1 corrected
-    "64": {"01":1, "05":4, "09":4, "27":4, "29":4},  # 64_01→pH1, 64_09→pH4, 64_27/29 added
+    "61": {"02":4, "04":4, "06":1},
+    "62": {"06":1, "09":4, "10":4},
+    "63": {"01":4, "03":1, "04":4, "05":1},
+    "64": {"01":1, "05":4, "09":4, "27":4, "29":4},
     "70": {"02":4, "03":1},
     "71": {"02":4},
     "72": {"07":1, "10":4},
-    "73": {"01":1, "03":1, "04":4, "07":4, "09":1},  # 73_01→pH1, 73_04/07 added, 73_09→pH1
+    "73": {"01":1, "03":1, "04":4, "07":4, "09":1},
     "74": {"01":4, "03":4, "05":4, "06":1},
 }
 
@@ -140,7 +138,6 @@ def parse_ocp_path(fp, fn):
 # ─────────────────────────────────────────────────────────────
 @st.cache_data
 def load_uploaded(lsv_bytes, ocp_bytes):
-    # ── LSV ──────────────────────────────────────────────────
     df = pd.read_excel(io.BytesIO(lsv_bytes), sheet_name="LSV")
     parsed = df["File"].apply(lambda x: pd.Series(parse_lsv_path(x)))
     parsed.columns = ["sample","folder","test","point"]
@@ -180,7 +177,6 @@ def load_uploaded(lsv_bytes, ocp_bytes):
                 "row_id":    f"lsv_{r.name}_{pcol}",
             })
 
-    # ── OCP ──────────────────────────────────────────────────
     ocp = pd.read_excel(io.BytesIO(ocp_bytes), sheet_name="Sheet1")
     ocp_parsed = ocp.apply(
         lambda r: pd.Series(parse_ocp_path(r["file_path"], r["file_name"])), axis=1)
@@ -364,6 +360,7 @@ def make_figure(df, param, pH_filter, dir_filter,
             if st_ is None:
                 continue
 
+            # Box legend entry
             if cut not in added_box_legend:
                 fig.add_trace(go.Scatter(
                     x=[None], y=[None], mode="markers",
@@ -378,41 +375,100 @@ def make_figure(df, param, pH_filter, dir_filter,
                 y0=st_["q3"], y1=st_["hi"],
                 line=dict(color=col, width=2.2))
             fig.add_shape(type="line",
-                x0=bx-cap_hw, x1=bx+cap_hw, y0=st_["hi"], y1=st_["hi"],
+                x0=bx-cap_hw, x1=bx+cap_hw,
+                y0=st_["hi"], y1=st_["hi"],
                 line=dict(color=col, width=2.5))
+
             # Lower whisker + cap
             fig.add_shape(type="line", x0=bx, x1=bx,
                 y0=st_["lo"], y1=st_["q1"],
                 line=dict(color=col, width=2.2))
             fig.add_shape(type="line",
-                x0=bx-cap_hw, x1=bx+cap_hw, y0=st_["lo"], y1=st_["lo"],
+                x0=bx-cap_hw, x1=bx+cap_hw,
+                y0=st_["lo"], y1=st_["lo"],
                 line=dict(color=col, width=2.5))
+
             # IQR box
             fig.add_shape(type="rect",
-                x0=bx-box_hw, x1=bx+box_hw, y0=st_["q1"], y1=st_["q3"],
+                x0=bx-box_hw, x1=bx+box_hw,
+                y0=st_["q1"], y1=st_["q3"],
                 fillcolor=fill, line=dict(color=col, width=2.5))
-            # Median
+
+            # Median line
             fig.add_shape(type="line",
-                x0=bx-box_hw, x1=bx+box_hw, y0=st_["med"], y1=st_["med"],
+                x0=bx-box_hw, x1=bx+box_hw,
+                y0=st_["med"], y1=st_["med"],
                 line=dict(color=col, width=3.5))
-            # Mean
+
+            # Mean marker (open circle)
             fig.add_trace(go.Scatter(
                 x=[bx], y=[st_["mean"]], mode="markers",
                 marker=dict(symbol="circle-open", size=12, color=col,
                             line=dict(color=col, width=2.5)),
                 legendgroup=f"box_{cut}", showlegend=False,
-                hovertemplate=f"<b>Mean ({cut}–{cond})</b>: %{{y:.5f}}<extra></extra>"))
-            # Outliers
-            if len(st_["outliers"]) > 0:
-                fig.add_trace(go.Scatter(
-                    x=[bx]*len(st_["outliers"]), y=st_["outliers"].tolist(),
-                    mode="markers",
-                    marker=dict(symbol="circle-open", size=10, color=col,
-                                line=dict(color=col, width=2.0)),
-                    legendgroup=f"box_{cut}", showlegend=False,
-                    hovertemplate=f"<b>Outlier ({cut})</b>: %{{y:.5f}}<extra></extra>"))
+                hovertemplate=f"<b>Mean ({cut} – {cond})</b>: %{{y:.5f}}<extra></extra>"))
 
-            # Raw data marks
+            # ── Outlier markers — presentation-friendly ───────
+            if len(st_["outliers"]) > 0:
+                n_out = len(st_["outliers"])
+
+                # One-time legend entry for outlier symbol
+                if "outlier_legend" not in added_box_legend:
+                    fig.add_trace(go.Scatter(
+                        x=[None], y=[None], mode="markers",
+                        name="⚠  Unusual value",
+                        marker=dict(symbol="diamond", size=12,
+                                    color=OUTLIER_COL,
+                                    line=dict(color="white", width=1.2)),
+                        legendgroup="outlier_legend",
+                        showlegend=True))
+                    added_box_legend.add("outlier_legend")
+
+                # Orange diamond markers
+                fig.add_trace(go.Scatter(
+                    x=[bx] * n_out,
+                    y=st_["outliers"].tolist(),
+                    mode="markers",
+                    marker=dict(
+                        symbol="diamond",
+                        size=12,
+                        color=OUTLIER_COL,
+                        line=dict(color="white", width=1.2),
+                        opacity=0.95,
+                    ),
+                    legendgroup="outlier_legend",
+                    showlegend=False,
+                    hovertemplate=(
+                        "<b>⚠ Unusual value</b><br>"
+                        "Value: %{y:.5f}<br>"
+                        "<i>This point falls far outside the<br>"
+                        "typical range and is not included<br>"
+                        "in the box statistics.</i>"
+                        "<extra></extra>"
+                    ),
+                ))
+
+                # ⚠ badge annotation next to the outlier group
+                out_label = f"⚠ {n_out} unusual" if n_out > 1 else "⚠ unusual"
+                # Place badge near the most extreme outlier
+                extreme_y = (max(st_["outliers"])
+                             if max(st_["outliers"]) > st_["hi"]
+                             else min(st_["outliers"]))
+                fig.add_annotation(
+                    x=bx + box_hw * 1.3,
+                    y=extreme_y,
+                    text=out_label,
+                    showarrow=False,
+                    font=dict(size=9, color=OUTLIER_COL,
+                              family="Arial"),
+                    xanchor="left",
+                    bgcolor="rgba(255,255,255,0.88)",
+                    bordercolor=OUTLIER_COL,
+                    borderwidth=1,
+                    borderpad=3,
+                )
+
+            # ── Raw data marks: colour=folder, shape=test ─────
             np.random.seed(42 + (0 if cut=="LC" else 1)*100 + ci*10)
             jitter_w = box_hw * 0.55
 
@@ -472,6 +528,7 @@ def make_figure(df, param, pH_filter, dir_filter,
                         if show_m:
                             added_mark_legend.add(leg_key)
 
+            # n= label
             fig.add_annotation(
                 x=bx, y=y_lo - y_pad*0.50,
                 text=f"n={st_['n']}",
@@ -552,6 +609,7 @@ def main():
     st.title("📊 Electrolyzer Whisker — SS316L Corrosion Study")
     st.caption(
         "● circle = Test 1  ·  ✕ x = Test 2  ·  "
+        "⬥ orange diamond = unusual value  ·  "
         "Colour = subsample folder  ·  Click marks to exclude"
     )
 
@@ -614,11 +672,13 @@ def main():
         st.divider()
         st.header("🎨 Mark encoding")
         st.markdown(
-            "**Shape = test**<br>"
+            "**Shape = test number**<br>"
             '<span style="font-size:15px">●</span>'
             '<span style="font-size:11px"> Filled circle = Test 1</span><br>'
             '<span style="font-size:15px">✕</span>'
-            '<span style="font-size:11px"> X mark = Test 2</span>',
+            '<span style="font-size:11px"> X mark = Test 2</span><br>'
+            f'<span style="font-size:15px;color:{OUTLIER_COL}">⬥</span>'
+            f'<span style="font-size:11px"> Orange diamond = Unusual value</span>',
             unsafe_allow_html=True)
         st.markdown("**Colour = subsample folder**")
         groups = [
@@ -734,6 +794,7 @@ def main():
 
     st.caption(
         "💡 **●** = Test 1  ·  **✕** = Test 2  ·  "
+        f"**⬥** = Unusual value (orange diamond)  ·  "
         "Colour = subsample folder  ·  Hover for details  ·  Click to exclude"
     )
 
