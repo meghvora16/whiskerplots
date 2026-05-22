@@ -439,7 +439,7 @@ def make_figure(df, param, pH_filter, dir_filter,
                     legendgroup="outlier_legend",
                     showlegend=False,
                     hovertemplate=(
-                        "<b>⚠ Unusual value</b><br>"
+                        "<b>⚠ Outlier</b><br>"
                         "Value: %{y:.5f}<br>"
                         "<i>This point falls far outside the<br>"
                         "typical range and is not included<br>"
