@@ -1,19 +1,21 @@
 """
-Electrolyzer Whisker Plot App  v3.0
+Electrolyzer Whisker Plot App  v3.1
 SS316L Corrosion Study
 
 Upload files:
   • batch_fit_summary.xlsx  (sheet: LSV)
   • ocp_summary.xlsx        (sheet: Sheet1)
 
-Mark encoding:
-  Colour  = cut × pH × subsample folder (18 distinct colours)
-  Symbol  = test number (● circle = T1, ✕ x = T2)
-  Legend  = Sample_Folder format e.g. "S60_02  ●T1"
-
-Fix v3.0:
-  - When only one cut type has data after filtering, its box is
-    centred (no offset). No ghost LC/WJ labels for absent cuts.
+Changes v3.1:
+  - Complete PH_MAP rebuilt from Summary_TestCondition_v3.xlsx
+    (adds S61_04, S61_06, S62_06, S62_09, S62_10, S63_04,
+     S64_27, S64_29, S73_04, S73_07 — was missing these)
+  - Corrected pH: S52_03 → pH1 (was pH4), S63_03 → pH1 (was pH4),
+    S63_05 → pH1 (was pH4), S64_01 → pH1 (was pH4),
+    S64_09 → pH4 (was pH1), S73_01 → pH1 (was pH4),
+    S73_09 → pH1 (was pH4)
+  - FOLDER_COLOURS extended for all new combos
+  - Dynamic box offsets: single cut → centred, both → offset ±0.22
 """
 
 import io, re
@@ -30,27 +32,44 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────
-#  COLOURS
+#  COLOURS  (cut × pH × folder)
 # ─────────────────────────────────────────────────────────────
 FOLDER_COLOURS = {
-    ("LC","1","02"): "#E53935",
-    ("LC","1","03"): "#B71C1C",
-    ("LC","1","04"): "#F06292",
-    ("LC","1","05"): "#FF7043",
-    ("LC","1","09"): "#7B1FA2",
-    ("LC","4","01"): "#FB8C00",
-    ("LC","4","02"): "#F9A825",
-    ("LC","4","05"): "#FDD835",
-    ("LC","4","10"): "#A1887F",
-    ("WJ","1","03"): "#1565C0",
-    ("WJ","1","06"): "#283593",
-    ("WJ","1","07"): "#4527A0",
-    ("WJ","4","01"): "#00897B",
-    ("WJ","4","02"): "#00ACC1",
-    ("WJ","4","03"): "#43A047",
-    ("WJ","4","05"): "#7CB342",
-    ("WJ","4","09"): "#26A69A",
-    ("WJ","4","10"): "#0288D1",
+    # LC pH 1 — red family
+    ("LC","1","01"): "#FF1744",   # S60_01, S64_01 (corrected to pH1)
+    ("LC","1","02"): "#E53935",   # S60_02
+    ("LC","1","03"): "#B71C1C",   # S52_03(corrected), S63_03(corrected)
+    ("LC","1","04"): "#F06292",   # S53_04, S63_04
+    ("LC","1","05"): "#FF7043",   # S50_05, S63_05(corrected)
+    ("LC","1","06"): "#E040FB",   # S61_06, S62_06
+    ("LC","1","09"): "#7B1FA2",   # S64_09 (corrected to pH1 → kept purple)
+
+    # LC pH 4 — orange/amber/warm family
+    ("LC","4","01"): "#FB8C00",   # S50_01, S53_01, S63_01, S64_01 (now only S50,53,63)
+    ("LC","4","02"): "#F9A825",   # S51_02, S61_02
+    ("LC","4","03"): "#FFD600",   # S63_03 (now pH1 corrected), S64_03
+    ("LC","4","04"): "#FFAB40",   # S61_04
+    ("LC","4","05"): "#FDD835",   # S63_05(corrected pH1), S64_05
+    ("LC","4","09"): "#A5D6A7",   # S64_09 (corrected to pH4)
+    ("LC","4","10"): "#A1887F",   # S52_10, S60_10
+    ("LC","4","27"): "#26C6DA",   # S64_27  ← NEW
+    ("LC","4","29"): "#00BFA5",   # S64_29  ← NEW
+
+    # WJ pH 1 — dark blue/violet family
+    ("WJ","1","01"): "#0D47A1",   # S73_01 (corrected to pH1)
+    ("WJ","1","03"): "#1565C0",   # S70_03, S73_03 (corrected to pH1)
+    ("WJ","1","06"): "#283593",   # S74_06
+    ("WJ","1","07"): "#4527A0",   # S72_07
+
+    # WJ pH 4 — teal/green/cyan family
+    ("WJ","4","01"): "#00897B",   # S73_01(now pH1), S74_01
+    ("WJ","4","02"): "#00ACC1",   # S70_02, S71_02
+    ("WJ","4","03"): "#43A047",   # S74_03
+    ("WJ","4","04"): "#F57C00",   # S73_04 ← NEW
+    ("WJ","4","05"): "#7CB342",   # S74_05
+    ("WJ","4","07"): "#8D6E63",   # S73_07 ← NEW
+    ("WJ","4","09"): "#26A69A",   # S73_09 (corrected to pH1 → reassigned)
+    ("WJ","4","10"): "#0288D1",   # S72_10
 }
 FALLBACK_COLOUR = "#9E9E9E"
 TEST_SYMBOL     = {"1": "circle", "2": "x", "3": "diamond", "4": "square"}
@@ -63,19 +82,33 @@ PARAM_UNITS = {
     "OCP1":"V vs. RHE","OCP2":"V vs. RHE","OCP3":"V vs. RHE",
     "Ecorr":"V vs. RHE","Icorr":"A dm⁻²","Epp":"V vs. RHE",
 }
+
 SAMPLE_META = {
-    "50":("LC","AC"),  "51":("LC","Brushed"),"52":("LC","Pickled"),"53":("LC","B&P"),
-    "60":("LC","AC"),  "61":("LC","Brushed"),"62":("LC","Pickled"),
-    "63":("LC","B&P"), "64":("LC","BPP"),
-    "70":("WJ","AC"),  "71":("WJ","Brushed"),"72":("WJ","Pickled"),
-    "73":("WJ","B&P"), "74":("WJ","BPP"),
+    "50":("LC","AC"),   "51":("LC","Brushed"), "52":("LC","Pickled"),  "53":("LC","B&P"),
+    "60":("LC","AC"),   "61":("LC","Brushed"), "62":("LC","Pickled"),
+    "63":("LC","B&P"),  "64":("LC","BPP"),
+    "70":("WJ","AC"),   "71":("WJ","Brushed"), "72":("WJ","Pickled"),
+    "73":("WJ","B&P"),  "74":("WJ","BPP"),
 }
+
+# ── Complete PH_MAP rebuilt from Summary_TestCondition_v3.xlsx ──
+# medium "Aqueous Solution H2SO4" → pH 1
+# medium "1:500 H2SO4" / "Master Solution ..." → pH 4
 PH_MAP = {
-    "50":{"01":4,"05":1},"51":{"02":4},"52":{"03":1,"10":4},"53":{"01":4,"04":1},
-    "60":{"02":1,"10":4},"61":{"02":4},"62":{"03":4},
-    "63":{"01":4,"03":1,"05":4},"64":{"01":4,"05":4,"09":1},
-    "70":{"02":4,"03":1},"71":{"02":4},"72":{"07":1,"10":4},
-    "73":{"01":4,"03":1,"09":4},"74":{"01":4,"03":4,"05":4,"06":1},
+    "50": {"01":4, "05":1},
+    "51": {"02":4},
+    "52": {"03":1, "10":4},          # 52_03 corrected to pH1 (H2SO4)
+    "53": {"01":4, "04":1},
+    "60": {"02":1, "10":4},
+    "61": {"02":4, "04":4, "06":1},  # 61_04 and 61_06 added
+    "62": {"06":1, "09":4, "10":4},  # 62_06, 62_09, 62_10 added; 62_03 removed (not in data)
+    "63": {"01":4, "03":1, "04":4, "05":1},  # 63_04 added; 63_03→pH1, 63_05→pH1 corrected
+    "64": {"01":1, "05":4, "09":4, "27":4, "29":4},  # 64_01→pH1, 64_09→pH4, 64_27/29 added
+    "70": {"02":4, "03":1},
+    "71": {"02":4},
+    "72": {"07":1, "10":4},
+    "73": {"01":1, "03":1, "04":4, "07":4, "09":1},  # 73_01→pH1, 73_04/07 added, 73_09→pH1
+    "74": {"01":4, "03":4, "05":4, "06":1},
 }
 
 def get_mark_colour(cut, ph, folder):
@@ -148,8 +181,6 @@ def load_uploaded(lsv_bytes, ocp_bytes):
             })
 
     # ── OCP ──────────────────────────────────────────────────
-    # ocp_summary.xlsx — sheet: Sheet1
-    # columns: sample_no, file_path, file_name, voltage_column_used, last_voltage_v
     ocp = pd.read_excel(io.BytesIO(ocp_bytes), sheet_name="Sheet1")
     ocp_parsed = ocp.apply(
         lambda r: pd.Series(parse_ocp_path(r["file_path"], r["file_name"])), axis=1)
@@ -244,7 +275,6 @@ def make_figure(df, param, pH_filter, dir_filter,
 
     is_ocp = param.startswith("OCP")
 
-    # ── Filters ───────────────────────────────────────────────
     sub = df[df["parameter"] == param].copy()
     if not is_ocp:
         if dir_filter != "Both":
@@ -279,14 +309,9 @@ def make_figure(df, param, pH_filter, dir_filter,
         fig.update_layout(height=560, plot_bgcolor="white", paper_bgcolor="white")
         return fig
 
-    # ── Which cuts actually have data after all filters? ──────
     cuts_with_data = set(sub["cut"].unique())
-
-    # ── Dynamic offsets ───────────────────────────────────────
-    # Both cuts → LC left (-0.22), WJ right (+0.22)
-    # One cut   → centred (0.0)
-    both_cuts = ("LC" in cuts_with_data) and ("WJ" in cuts_with_data)
-    CUT_OFFSET = {
+    both_cuts      = ("LC" in cuts_with_data) and ("WJ" in cuts_with_data)
+    CUT_OFFSET     = {
         "LC": -0.22 if both_cuts else 0.0,
         "WJ":  0.22 if both_cuts else 0.0,
     }
@@ -311,13 +336,11 @@ def make_figure(df, param, pH_filter, dir_filter,
         tick_vals.append(cx)
         tick_text.append(cond)
 
-        # Condition separator
         if ci > 0:
             fig.add_shape(type="line",
                 x0=ci*slot, x1=ci*slot, y0=y_lo, y1=y_hi,
                 line=dict(color="#B0BEC5", width=1.5))
 
-        # Alternating background band
         if ci % 2 == 1:
             fig.add_shape(type="rect",
                 x0=ci*slot, x1=(ci+1)*slot, y0=y_lo, y1=y_hi,
@@ -325,7 +348,6 @@ def make_figure(df, param, pH_filter, dir_filter,
                 line=dict(width=0), layer="below")
 
         for cut in ["LC","WJ"]:
-            # Skip entirely if this cut has no data after filtering
             if cut not in cuts_with_data:
                 continue
 
@@ -342,7 +364,6 @@ def make_figure(df, param, pH_filter, dir_filter,
             if st_ is None:
                 continue
 
-            # Box legend entry — only when data confirmed
             if cut not in added_box_legend:
                 fig.add_trace(go.Scatter(
                     x=[None], y=[None], mode="markers",
@@ -353,52 +374,45 @@ def make_figure(df, param, pH_filter, dir_filter,
                 added_box_legend.add(cut)
 
             # Upper whisker + cap
-            fig.add_shape(type="line",
-                x0=bx, x1=bx, y0=st_["q3"], y1=st_["hi"],
+            fig.add_shape(type="line", x0=bx, x1=bx,
+                y0=st_["q3"], y1=st_["hi"],
                 line=dict(color=col, width=2.2))
             fig.add_shape(type="line",
                 x0=bx-cap_hw, x1=bx+cap_hw, y0=st_["hi"], y1=st_["hi"],
                 line=dict(color=col, width=2.5))
-
             # Lower whisker + cap
-            fig.add_shape(type="line",
-                x0=bx, x1=bx, y0=st_["lo"], y1=st_["q1"],
+            fig.add_shape(type="line", x0=bx, x1=bx,
+                y0=st_["lo"], y1=st_["q1"],
                 line=dict(color=col, width=2.2))
             fig.add_shape(type="line",
                 x0=bx-cap_hw, x1=bx+cap_hw, y0=st_["lo"], y1=st_["lo"],
                 line=dict(color=col, width=2.5))
-
             # IQR box
             fig.add_shape(type="rect",
-                x0=bx-box_hw, x1=bx+box_hw,
-                y0=st_["q1"], y1=st_["q3"],
+                x0=bx-box_hw, x1=bx+box_hw, y0=st_["q1"], y1=st_["q3"],
                 fillcolor=fill, line=dict(color=col, width=2.5))
-
-            # Median line
+            # Median
             fig.add_shape(type="line",
-                x0=bx-box_hw, x1=bx+box_hw,
-                y0=st_["med"], y1=st_["med"],
+                x0=bx-box_hw, x1=bx+box_hw, y0=st_["med"], y1=st_["med"],
                 line=dict(color=col, width=3.5))
-
-            # Mean marker (open circle)
+            # Mean
             fig.add_trace(go.Scatter(
                 x=[bx], y=[st_["mean"]], mode="markers",
                 marker=dict(symbol="circle-open", size=12, color=col,
                             line=dict(color=col, width=2.5)),
                 legendgroup=f"box_{cut}", showlegend=False,
                 hovertemplate=f"<b>Mean ({cut}–{cond})</b>: %{{y:.5f}}<extra></extra>"))
-
-            # Outlier dots
+            # Outliers
             if len(st_["outliers"]) > 0:
                 fig.add_trace(go.Scatter(
-                    x=[bx]*len(st_["outliers"]),
-                    y=st_["outliers"].tolist(), mode="markers",
+                    x=[bx]*len(st_["outliers"]), y=st_["outliers"].tolist(),
+                    mode="markers",
                     marker=dict(symbol="circle-open", size=10, color=col,
                                 line=dict(color=col, width=2.0)),
                     legendgroup=f"box_{cut}", showlegend=False,
                     hovertemplate=f"<b>Outlier ({cut})</b>: %{{y:.5f}}<extra></extra>"))
 
-            # ── Raw data marks: colour=folder, shape=test ─────
+            # Raw data marks
             np.random.seed(42 + (0 if cut=="LC" else 1)*100 + ci*10)
             jitter_w = box_hw * 0.55
 
@@ -418,7 +432,6 @@ def make_figure(df, param, pH_filter, dir_filter,
                         is_circ  = (symbol == "circle")
                         t_lbl    = "●T1" if t_val == "1" else "✕T2"
 
-                        # Legend: "S60_02  ●T1" using actual filtered samples
                         actual   = sorted(tph["sample"].unique())
                         samp_fol = ", ".join(f"{s}_{folder_val}" for s in actual)
                         leg_key  = f"{cut}_pH{ph_val}_F{folder_val}_T{t_val}"
@@ -429,7 +442,6 @@ def make_figure(df, param, pH_filter, dir_filter,
                         custom = tph[["row_id","sample","folder","test",
                                       "point","pH","direction"]].values.tolist()
 
-                        # Circle (T1) = filled; X (T2) = open stroke
                         fig.add_trace(go.Scatter(
                             x=(bx + jitter).tolist(),
                             y=tvals.tolist(),
@@ -460,7 +472,6 @@ def make_figure(df, param, pH_filter, dir_filter,
                         if show_m:
                             added_mark_legend.add(leg_key)
 
-            # n= label
             fig.add_annotation(
                 x=bx, y=y_lo - y_pad*0.50,
                 text=f"n={st_['n']}",
@@ -468,7 +479,7 @@ def make_figure(df, param, pH_filter, dir_filter,
                 font=dict(size=10, color=col, family="Arial"),
                 xanchor="center")
 
-    # ── LC / WJ labels — only for cuts with data ──────────────
+    # Cut labels — only for cuts with data
     if conds:
         first_cx = slot / 2
         for cut_lbl in ["LC","WJ"]:
@@ -482,7 +493,6 @@ def make_figure(df, param, pH_filter, dir_filter,
                 font=dict(size=12, color=CUT_COL[cut_lbl], family="Arial"),
                 xanchor="center")
 
-    # ── Layout ────────────────────────────────────────────────
     pH_str     = f"pH {pH_filter}" if pH_filter != "Both" else "pH 1 & 4"
     dir_str    = f" | {dir_filter}" if not is_ocp and dir_filter != "Both" else ""
     sample_str = f" | {sample_filter}" if sample_filter else ""
@@ -549,7 +559,6 @@ def main():
     if "deleted_meta" not in st.session_state: st.session_state.deleted_meta = {}
     if "df"           not in st.session_state: st.session_state.df           = None
 
-    # ── Sidebar ───────────────────────────────────────────────
     with st.sidebar:
         st.header("📂 Data source")
         src = st.radio("Load from:", ["Upload raw files","Pre-filled Excel"])
@@ -613,16 +622,25 @@ def main():
             unsafe_allow_html=True)
         st.markdown("**Colour = subsample folder**")
         groups = [
-            ("LC pH 1",[("#E53935","S60_02"),("#B71C1C","S52_03, S63_03"),
-                        ("#F06292","S53_04"),("#FF7043","S50_05"),("#7B1FA2","S64_09")]),
-            ("LC pH 4",[("#FB8C00","S50_01,S53_01,S63_01,S64_01"),
-                        ("#F9A825","S51_02, S61_02"),("#FDD835","S63_05, S64_05"),
-                        ("#A1887F","S52_10, S60_10")]),
-            ("WJ pH 1",[("#1565C0","S70_03, S73_03"),("#283593","S74_06"),
-                        ("#4527A0","S72_07")]),
-            ("WJ pH 4",[("#00897B","S73_01, S74_01"),("#00ACC1","S70_02, S71_02"),
-                        ("#43A047","S74_03"),("#7CB342","S74_05"),
-                        ("#26A69A","S73_09"),("#0288D1","S72_10")]),
+            ("LC pH 1",[
+                ("#FF1744","S60_01, S64_01"),("#E53935","S60_02"),
+                ("#B71C1C","S52_03, S63_03"),("#F06292","S53_04, S63_04"),
+                ("#FF7043","S50_05, S63_05"),("#E040FB","S61_06, S62_06"),
+                ("#7B1FA2","S64_09"),]),
+            ("LC pH 4",[
+                ("#FB8C00","S50_01, S53_01, S63_01"),("#F9A825","S51_02, S61_02"),
+                ("#FFD600","S64_03"),("#FFAB40","S61_04"),
+                ("#FDD835","S64_05"),("#A5D6A7","S64_09 (pH4)"),
+                ("#A1887F","S52_10, S60_10"),
+                ("#26C6DA","S64_27"),("#00BFA5","S64_29"),]),
+            ("WJ pH 1",[
+                ("#0D47A1","S73_01"),("#1565C0","S70_03, S73_03"),
+                ("#283593","S74_06"),("#4527A0","S72_07"),]),
+            ("WJ pH 4",[
+                ("#00897B","S74_01"),("#00ACC1","S70_02, S71_02"),
+                ("#43A047","S74_03"),("#F57C00","S73_04"),
+                ("#7CB342","S74_05"),("#8D6E63","S73_07"),
+                ("#26A69A","S73_09"),("#0288D1","S72_10"),]),
         ]
         for group_title, entries in groups:
             st.markdown(f"*{group_title}*")
@@ -648,7 +666,6 @@ def main():
                 file_name="electrolyzer_excluded.csv",
                 mime="text/csv", use_container_width=True)
 
-    # ── Metrics ───────────────────────────────────────────────
     df       = st.session_state.df
     param_df = df[df["parameter"] == param]
     active   = param_df[~param_df["row_id"].isin(st.session_state.deleted_ids)]
@@ -659,7 +676,6 @@ def main():
     c3.metric("Excluded",           len(st.session_state.deleted_ids))
     c4.metric("Conditions",         active["condition"].nunique())
 
-    # ── Plot ──────────────────────────────────────────────────
     fig = make_figure(
         df=df, param=param, pH_filter=pH_filter, dir_filter=dir_filter,
         r2_min=r2_min, sd_mult=sd_mult, log_icorr=log_icorr,
@@ -673,7 +689,6 @@ def main():
              f"{sample_filter}_{len(st.session_state.deleted_ids)}"),
     )
 
-    # ── Handle click-to-exclude ───────────────────────────────
     if event and event.get("selection") and event["selection"].get("points"):
         for pt in event["selection"]["points"]:
             cdata = pt.get("customdata")
@@ -722,7 +737,6 @@ def main():
         "Colour = subsample folder  ·  Hover for details  ·  Click to exclude"
     )
 
-    # ── Excluded points log ───────────────────────────────────
     n_del = len(st.session_state.deleted_ids)
     if n_del > 0:
         st.subheader(f"🗑 Excluded Points  ({n_del})")
@@ -767,7 +781,6 @@ def main():
                     st.session_state.deleted_meta.pop(rid, None)
                     st.rerun()
 
-    # ── Summary statistics ────────────────────────────────────
     st.subheader("📋 Summary Statistics")
 
     sub = df[~df["row_id"].isin(st.session_state.deleted_ids)]
