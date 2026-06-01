@@ -20,6 +20,9 @@ Changes v3.2:
   - FOLDER_COLOURS extended to cover every cut × pH × folder combination
     present in v4 (added LC1 07/10, LC4 06/08, WJ1 02/04/08/09, WJ4 06)
   - Mark-encoding legend regenerated to match the v4 sample/folder/pH map
+  - NEW: sidebar "✏️ Customise plot" — per-test shape picker and
+    per-sample/folder colour picker (scoped to what's currently plotted),
+    with a reset button. Fill logic generalised for any chosen symbol.
 """
 
 import io, re
@@ -47,19 +50,19 @@ FOLDER_COLOURS = {
     ("LC", "1", "05"): "#FF7043",   # S50_05, S63_05
     ("LC", "1", "06"): "#E040FB",   # S61_06, S62_06, S64_06
     ("LC", "1", "07"): "#D81B60",   # S61_07, S63_07          ← NEW
-    ("LC", "1", "09"): "#7B1FA2",   # S63_09 (T2)
-    ("LC", "1", "10"): "#C2185B",   # S64_10 (T2)             ← NEW
+    ("LC", "1", "09"): "#7B1FA2",   # S63_09(T2)
+    ("LC", "1", "10"): "#C2185B",   # S64_10(T2)              ← NEW
 
     # ── LC pH 4 — orange / amber / warm family ──
     ("LC", "4", "01"): "#FB8C00",   # S50_01, S51_01, S53_01, S61_01, S62_01, S63_01
     ("LC", "4", "02"): "#F9A825",   # S50_02, S51_02, S53_02, S61_02, S63_02
     ("LC", "4", "03"): "#FFD600",   # S52_03, S61_03, S63_03, S64_03
-    ("LC", "4", "04"): "#FFAB40",   # S52_04, S61_04, S63_04 (T2)
+    ("LC", "4", "04"): "#FFAB40",   # S52_04, S61_04, S63_04(T2)
     ("LC", "4", "05"): "#FDD835",   # S51_05, S62_05, S64_05
     ("LC", "4", "06"): "#FF6F00",   # S51_06                  ← NEW
     ("LC", "4", "08"): "#FFB300",   # S63_08                  ← NEW
-    ("LC", "4", "09"): "#A5D6A7",   # S60_09, S62_09, S63_09 (T1), S64_09
-    ("LC", "4", "10"): "#A1887F",   # S52_10, S60_10, S62_10, S64_10 (T1)
+    ("LC", "4", "09"): "#A5D6A7",   # S60_09, S62_09, S63_09(T1), S64_09
+    ("LC", "4", "10"): "#A1887F",   # S52_10, S60_10, S62_10, S64_10(T1)
     ("LC", "4", "27"): "#26C6DA",   # S64_27
     ("LC", "4", "29"): "#00BFA5",   # S64_29
 
@@ -71,7 +74,7 @@ FOLDER_COLOURS = {
     ("WJ", "1", "06"): "#283593",   # S74_06
     ("WJ", "1", "07"): "#4527A0",   # S72_07, S74_07
     ("WJ", "1", "08"): "#5C6BC0",   # S72_08                  ← NEW
-    ("WJ", "1", "09"): "#039BE5",   # S73_09 (T2)             ← NEW
+    ("WJ", "1", "09"): "#039BE5",   # S73_09(T2)              ← NEW
 
     # ── WJ pH 4 — teal / green / cyan family ──
     ("WJ", "4", "01"): "#00897B",   # S70_01, S71_01, S74_01
@@ -81,11 +84,29 @@ FOLDER_COLOURS = {
     ("WJ", "4", "05"): "#7CB342",   # S73_05, S74_05
     ("WJ", "4", "06"): "#009688",   # S73_06                  ← NEW
     ("WJ", "4", "07"): "#8D6E63",   # S73_07
-    ("WJ", "4", "09"): "#26A69A",   # S73_09 (T1)
+    ("WJ", "4", "09"): "#26A69A",   # S73_09(T1)
     ("WJ", "4", "10"): "#0288D1",   # S72_10, S73_10
 }
 FALLBACK_COLOUR = "#9E9E9E"
 TEST_SYMBOL     = {"1": "circle", "2": "x", "3": "diamond", "4": "square"}
+
+# Symbols offered in the shape picker
+SYMBOL_OPTIONS = [
+    "circle", "square", "diamond", "triangle-up", "triangle-down",
+    "star", "hexagram", "pentagon", "cross", "x",
+    "circle-open", "square-open", "diamond-open", "triangle-up-open",
+]
+# Unicode glyph used in legend labels so they stay honest after customisation
+SYMBOL_GLYPH = {
+    "circle": "●", "square": "■", "diamond": "◆", "triangle-up": "▲",
+    "triangle-down": "▼", "star": "★", "hexagram": "✶", "pentagon": "⬟",
+    "cross": "✚", "x": "✕", "circle-open": "○", "square-open": "□",
+    "diamond-open": "◇", "triangle-up-open": "△",
+}
+# Line/open symbols render hollow (no fill); everything else is filled
+_HOLLOW_KEYS = ("open", "x", "cross", "asterisk", "line", "y-up", "y-down")
+def is_filled_symbol(sym):
+    return not any(k in str(sym) for k in _HOLLOW_KEYS)
 
 CUT_COL  = {"LC": "#C0392B",               "WJ": "#1F618D"}
 CUT_FILL = {"LC": "rgba(220,100,80,0.15)", "WJ": "rgba(50,130,180,0.15)"}
@@ -310,8 +331,54 @@ def compute_stats(vals: np.ndarray, sd_mult: float):
 # ─────────────────────────────────────────────────────────────
 #  FIGURE
 # ─────────────────────────────────────────────────────────────
+def discover_present(df, param, pH_filter, dir_filter, r2_min,
+                     sample_filter, deleted_ids):
+    """Return (combos, tests) actually shown for the current filter selection.
+    combos: {(cut, pH, folder): sorted [sample_folder labels]}
+    tests : sorted list of test numbers present
+    """
+    is_ocp = param.startswith("OCP")
+    sub = df[df["parameter"] == param].copy()
+    if not is_ocp:
+        if dir_filter != "Both":
+            sub = sub[sub["direction"].str.upper() == dir_filter.upper()]
+        sub = sub[(sub["r2"].isna()) | (sub["r2"] >= r2_min)]
+    if pH_filter != "Both":
+        sub = sub[sub["pH"] == str(pH_filter)]
+    if sample_filter:
+        sub = sub[sub["sample"].str.upper() == sample_filter.upper()]
+    sub = sub[~sub["row_id"].isin(deleted_ids)]
+    for c, d in [("folder", "01"), ("pH", "1"), ("test", "1")]:
+        if c not in sub.columns: sub[c] = d
+        sub[c] = sub[c].fillna(d).astype(str)
+
+    combos = {}
+    for (cut, ph, fol), g in sub.groupby(["cut", "pH", "folder"]):
+        if not cut: continue
+        labels = sorted({f"{s}_{fol}" for s in g["sample"].unique()})
+        combos[(cut, str(ph), str(fol))] = labels
+    tests = sorted(sub["test"].unique())
+    return combos, tests
+
+
 def make_figure(df, param, pH_filter, dir_filter,
-                r2_min, sd_mult, log_icorr, deleted_ids, sample_filter):
+                r2_min, sd_mult, log_icorr, deleted_ids, sample_filter,
+                color_overrides=None, symbol_overrides=None):
+
+    color_overrides  = color_overrides  or {}
+    symbol_overrides = symbol_overrides or {}
+
+    def mark_colour(cut, ph, folder):
+        key = (cut, str(ph), str(folder))
+        if key in color_overrides:
+            return color_overrides[key]
+        return FOLDER_COLOURS.get(key, FALLBACK_COLOUR)
+
+    def mark_symbol(test):
+        t = str(test)
+        if t in symbol_overrides:
+            return symbol_overrides[t]
+        return TEST_SYMBOL.get(t, "circle")
 
     is_ocp = param.startswith("OCP")
 
@@ -467,10 +534,11 @@ def make_figure(df, param, pH_filter, dir_filter,
                         tvals = tph["value"].dropna().values
                         if len(tvals) == 0: continue
 
-                        mark_col = get_mark_colour(cut, ph_val, folder_val)
-                        symbol   = TEST_SYMBOL.get(str(t_val), "circle")
-                        is_circ  = (symbol == "circle")
-                        t_lbl    = "●T1" if t_val == "1" else "✕T2"
+                        mark_col = mark_colour(cut, ph_val, folder_val)
+                        symbol   = mark_symbol(t_val)
+                        filled   = is_filled_symbol(symbol)
+                        glyph    = SYMBOL_GLYPH.get(symbol, "•")
+                        t_lbl    = f"{glyph}T{t_val}"
 
                         actual   = sorted(tph["sample"].unique())
                         samp_fol = ", ".join(f"{s}_{folder_val}" for s in actual)
@@ -488,8 +556,8 @@ def make_figure(df, param, pH_filter, dir_filter,
                             mode="markers",
                             marker=dict(
                                 symbol=symbol,
-                                size=9 if is_circ else 8,
-                                color=mark_col if is_circ else "rgba(0,0,0,0)",
+                                size=9 if filled else 8,
+                                color=mark_col if filled else "rgba(0,0,0,0)",
                                 line=dict(color=mark_col, width=2.2),
                                 opacity=0.92,
                             ),
@@ -595,9 +663,11 @@ def main():
         "Colour = subsample folder  ·  Click marks to exclude"
     )
 
-    if "deleted_ids"  not in st.session_state: st.session_state.deleted_ids  = set()
-    if "deleted_meta" not in st.session_state: st.session_state.deleted_meta = {}
-    if "df"           not in st.session_state: st.session_state.df           = None
+    if "deleted_ids"     not in st.session_state: st.session_state.deleted_ids     = set()
+    if "deleted_meta"    not in st.session_state: st.session_state.deleted_meta    = {}
+    if "df"              not in st.session_state: st.session_state.df              = None
+    if "color_overrides" not in st.session_state: st.session_state.color_overrides = {}
+    if "symbol_overrides" not in st.session_state: st.session_state.symbol_overrides = {}
 
     with st.sidebar:
         st.header("📂 Data source")
@@ -716,6 +786,51 @@ def main():
                     f' <span style="font-size:11px;color:#333">{label}</span>',
                     unsafe_allow_html=True)
 
+        # ── Customise colours & shapes for what's currently plotted ──
+        st.divider()
+        st.header("✏️ Customise plot")
+        combos, tests = discover_present(
+            df, param, pH_filter, dir_filter, r2_min,
+            sample_filter, st.session_state.deleted_ids)
+
+        with st.expander("Shapes (per test)", expanded=False):
+            if not tests:
+                st.caption("No data for the current filters.")
+            for t in tests:
+                base_sym = TEST_SYMBOL.get(str(t), "circle")
+                cur_sym  = st.session_state.symbol_overrides.get(str(t), base_sym)
+                idx      = (SYMBOL_OPTIONS.index(cur_sym)
+                            if cur_sym in SYMBOL_OPTIONS else 0)
+                chosen = st.selectbox(
+                    f"Test {t}  {SYMBOL_GLYPH.get(base_sym, '')}",
+                    SYMBOL_OPTIONS, index=idx, key=f"sym_{t}")
+                if chosen != base_sym:
+                    st.session_state.symbol_overrides[str(t)] = chosen
+                else:
+                    st.session_state.symbol_overrides.pop(str(t), None)
+
+        with st.expander("Colours (per sample / folder)", expanded=False):
+            if not combos:
+                st.caption("No data for the current filters.")
+            for key in sorted(combos):
+                cut, ph, fol = key
+                base_col = FOLDER_COLOURS.get(key, FALLBACK_COLOUR)
+                cur_col  = st.session_state.color_overrides.get(key, base_col)
+                label    = (", ".join(combos[key])
+                            + f"   ({cut} · pH{ph} · F{fol})")
+                chosen = st.color_picker(
+                    label, value=cur_col,
+                    key=f"col_{cut}_{ph}_{fol}")
+                if chosen.upper() != base_col.upper():
+                    st.session_state.color_overrides[key] = chosen
+                else:
+                    st.session_state.color_overrides.pop(key, None)
+
+        if st.button("↺ Reset colours & shapes", use_container_width=True):
+            st.session_state.color_overrides  = {}
+            st.session_state.symbol_overrides = {}
+            st.rerun()
+
         st.divider()
         st.download_button(
             "⬇ Download filtered CSV",
@@ -747,12 +862,18 @@ def main():
         r2_min=r2_min, sd_mult=sd_mult, log_icorr=log_icorr,
         deleted_ids=st.session_state.deleted_ids,
         sample_filter=sample_filter,
+        color_overrides=st.session_state.color_overrides,
+        symbol_overrides=st.session_state.symbol_overrides,
     )
 
+    _ov = abs(hash(
+        str(sorted(st.session_state.color_overrides.items())) +
+        str(sorted(st.session_state.symbol_overrides.items()))
+    ))
     event = st.plotly_chart(
         fig, use_container_width=True, on_select="rerun",
         key=(f"chart_{param}_{pH_filter}_{dir_filter}_"
-             f"{sample_filter}_{len(st.session_state.deleted_ids)}"),
+             f"{sample_filter}_{len(st.session_state.deleted_ids)}_{_ov}"),
     )
 
     if event and event.get("selection") and event["selection"].get("points"):
