@@ -1,21 +1,25 @@
 """
-Electrolyzer Whisker Plot App  v3.1
+Electrolyzer Whisker Plot App  v3.2
 SS316L Corrosion Study
 
 Upload files:
   • batch_fit_summary.xlsx  (sheet: LSV)
   • ocp_summary.xlsx        (sheet: Sheet1)
 
-Changes v3.1:
-  - Complete PH_MAP rebuilt from Summary_TestCondition_v3.xlsx
-    (adds S61_04, S61_06, S62_06, S62_09, S62_10, S63_04,
-     S64_27, S64_29, S73_04, S73_07 — was missing these)
-  - Corrected pH: S52_03 → pH1 (was pH4), S63_03 → pH1 (was pH4),
-    S63_05 → pH1 (was pH4), S64_01 → pH1 (was pH4),
-    S64_09 → pH4 (was pH1), S73_01 → pH1 (was pH4),
-    S73_09 → pH1 (was pH4)
-  - FOLDER_COLOURS extended for all new combos
-  - Dynamic box offsets: single cut → centred, both → offset ±0.22
+Changes v3.2:
+  - Y-axis labels no longer show "vs. RHE" (now plain "V")
+  - PH_MAP fully rebuilt from Summary_TestCondition_v4.xlsx using the
+    "Medium" column (Aqueous Solution H2SO4 → pH 1; 1:500 H2SO4 and
+    Master Solution → pH 4)
+  - Per-TEST pH resolution: four folders use different media on Test 1 vs
+    Test 2, so their pH now depends on the test number:
+        63_04  → T1 pH1, T2 pH4
+        63_09  → T1 pH4, T2 pH1
+        64_10  → T1 pH4, T2 pH1
+        73_09  → T1 pH4, T2 pH1
+  - FOLDER_COLOURS extended to cover every cut × pH × folder combination
+    present in v4 (added LC1 07/10, LC4 06/08, WJ1 02/04/08/09, WJ4 06)
+  - Mark-encoding legend regenerated to match the v4 sample/folder/pH map
 """
 
 import io, re
@@ -35,41 +39,50 @@ st.set_page_config(
 #  COLOURS  (cut × pH × folder)
 # ─────────────────────────────────────────────────────────────
 FOLDER_COLOURS = {
-    # LC pH 1 — red family
-    ("LC","1","01"): "#FF1744",   # S60_01, S64_01 (corrected to pH1)
-    ("LC","1","02"): "#E53935",   # S60_02
-    ("LC","1","03"): "#B71C1C",   # S52_03(corrected), S63_03(corrected)
-    ("LC","1","04"): "#F06292",   # S53_04, S63_04
-    ("LC","1","05"): "#FF7043",   # S50_05, S63_05(corrected)
-    ("LC","1","06"): "#E040FB",   # S61_06, S62_06
-    ("LC","1","09"): "#7B1FA2",   # S64_09 (corrected to pH1 → kept purple)
+    # ── LC pH 1 — red / pink / purple family ──
+    ("LC", "1", "01"): "#FF1744",   # S52_01, S60_01, S64_01
+    ("LC", "1", "02"): "#E53935",   # S60_02, S62_02
+    ("LC", "1", "03"): "#B71C1C",   # S51_03, S53_03
+    ("LC", "1", "04"): "#F06292",   # S50_04, S53_04, S62_04, S63_04(T1)
+    ("LC", "1", "05"): "#FF7043",   # S50_05, S63_05
+    ("LC", "1", "06"): "#E040FB",   # S61_06, S62_06, S64_06
+    ("LC", "1", "07"): "#D81B60",   # S61_07, S63_07          ← NEW
+    ("LC", "1", "09"): "#7B1FA2",   # S63_09 (T2)
+    ("LC", "1", "10"): "#C2185B",   # S64_10 (T2)             ← NEW
 
-    # LC pH 4 — orange/amber/warm family
-    ("LC","4","01"): "#FB8C00",   # S50_01, S53_01, S63_01, S64_01 (now only S50,53,63)
-    ("LC","4","02"): "#F9A825",   # S51_02, S61_02
-    ("LC","4","03"): "#FFD600",   # S63_03 (now pH1 corrected), S64_03
-    ("LC","4","04"): "#FFAB40",   # S61_04
-    ("LC","4","05"): "#FDD835",   # S63_05(corrected pH1), S64_05
-    ("LC","4","09"): "#A5D6A7",   # S64_09 (corrected to pH4)
-    ("LC","4","10"): "#A1887F",   # S52_10, S60_10
-    ("LC","4","27"): "#26C6DA",   # S64_27  ← NEW
-    ("LC","4","29"): "#00BFA5",   # S64_29  ← NEW
+    # ── LC pH 4 — orange / amber / warm family ──
+    ("LC", "4", "01"): "#FB8C00",   # S50_01, S51_01, S53_01, S61_01, S62_01, S63_01
+    ("LC", "4", "02"): "#F9A825",   # S50_02, S51_02, S53_02, S61_02, S63_02
+    ("LC", "4", "03"): "#FFD600",   # S52_03, S61_03, S63_03, S64_03
+    ("LC", "4", "04"): "#FFAB40",   # S52_04, S61_04, S63_04 (T2)
+    ("LC", "4", "05"): "#FDD835",   # S51_05, S62_05, S64_05
+    ("LC", "4", "06"): "#FF6F00",   # S51_06                  ← NEW
+    ("LC", "4", "08"): "#FFB300",   # S63_08                  ← NEW
+    ("LC", "4", "09"): "#A5D6A7",   # S60_09, S62_09, S63_09 (T1), S64_09
+    ("LC", "4", "10"): "#A1887F",   # S52_10, S60_10, S62_10, S64_10 (T1)
+    ("LC", "4", "27"): "#26C6DA",   # S64_27
+    ("LC", "4", "29"): "#00BFA5",   # S64_29
 
-    # WJ pH 1 — dark blue/violet family
-    ("WJ","1","01"): "#0D47A1",   # S73_01 (corrected to pH1)
-    ("WJ","1","03"): "#1565C0",   # S70_03, S73_03 (corrected to pH1)
-    ("WJ","1","06"): "#283593",   # S74_06
-    ("WJ","1","07"): "#4527A0",   # S72_07
+    # ── WJ pH 1 — dark blue / violet family ──
+    ("WJ", "1", "01"): "#0D47A1",   # S73_01
+    ("WJ", "1", "02"): "#1E88E5",   # S73_02                  ← NEW
+    ("WJ", "1", "03"): "#1565C0",   # S70_03, S71_03, S73_03
+    ("WJ", "1", "04"): "#3949AB",   # S70_04                  ← NEW
+    ("WJ", "1", "06"): "#283593",   # S74_06
+    ("WJ", "1", "07"): "#4527A0",   # S72_07, S74_07
+    ("WJ", "1", "08"): "#5C6BC0",   # S72_08                  ← NEW
+    ("WJ", "1", "09"): "#039BE5",   # S73_09 (T2)             ← NEW
 
-    # WJ pH 4 — teal/green/cyan family
-    ("WJ","4","01"): "#00897B",   # S73_01(now pH1), S74_01
-    ("WJ","4","02"): "#00ACC1",   # S70_02, S71_02
-    ("WJ","4","03"): "#43A047",   # S74_03
-    ("WJ","4","04"): "#F57C00",   # S73_04 ← NEW
-    ("WJ","4","05"): "#7CB342",   # S74_05
-    ("WJ","4","07"): "#8D6E63",   # S73_07 ← NEW
-    ("WJ","4","09"): "#26A69A",   # S73_09 (corrected to pH1 → reassigned)
-    ("WJ","4","10"): "#0288D1",   # S72_10
+    # ── WJ pH 4 — teal / green / cyan family ──
+    ("WJ", "4", "01"): "#00897B",   # S70_01, S71_01, S74_01
+    ("WJ", "4", "02"): "#00ACC1",   # S70_02, S71_02, S72_02, S74_02
+    ("WJ", "4", "03"): "#43A047",   # S74_03
+    ("WJ", "4", "04"): "#F57C00",   # S73_04
+    ("WJ", "4", "05"): "#7CB342",   # S73_05, S74_05
+    ("WJ", "4", "06"): "#009688",   # S73_06                  ← NEW
+    ("WJ", "4", "07"): "#8D6E63",   # S73_07
+    ("WJ", "4", "09"): "#26A69A",   # S73_09 (T1)
+    ("WJ", "4", "10"): "#0288D1",   # S72_10, S73_10
 }
 FALLBACK_COLOUR = "#9E9E9E"
 TEST_SYMBOL     = {"1": "circle", "2": "x", "3": "diamond", "4": "square"}
@@ -77,39 +90,64 @@ TEST_SYMBOL     = {"1": "circle", "2": "x", "3": "diamond", "4": "square"}
 CUT_COL  = {"LC": "#C0392B",               "WJ": "#1F618D"}
 CUT_FILL = {"LC": "rgba(220,100,80,0.15)", "WJ": "rgba(50,130,180,0.15)"}
 
-COND_ORDER  = ["AC","Brushed","Pickled","B&P","BPP"]
+COND_ORDER  = ["AC", "Brushed", "Pickled", "B&P", "BPP"]
 PARAM_UNITS = {
-    "OCP1":"V vs. RHE","OCP2":"V vs. RHE","OCP3":"V vs. RHE",
-    "Ecorr":"V vs. RHE","Icorr":"A dm⁻²","Epp":"V vs. RHE",
+    "OCP1": "V", "OCP2": "V", "OCP3": "V",
+    "Ecorr": "V", "Icorr": "A dm⁻²", "Epp": "V",
 }
 
 SAMPLE_META = {
-    "50":("LC","AC"),   "51":("LC","Brushed"), "52":("LC","Pickled"),  "53":("LC","B&P"),
-    "60":("LC","AC"),   "61":("LC","Brushed"), "62":("LC","Pickled"),
-    "63":("LC","B&P"),  "64":("LC","BPP"),
-    "70":("WJ","AC"),   "71":("WJ","Brushed"), "72":("WJ","Pickled"),
-    "73":("WJ","B&P"),  "74":("WJ","BPP"),
+    "50": ("LC", "AC"),  "51": ("LC", "Brushed"), "52": ("LC", "Pickled"), "53": ("LC", "B&P"),
+    "60": ("LC", "AC"),  "61": ("LC", "Brushed"), "62": ("LC", "Pickled"),
+    "63": ("LC", "B&P"), "64": ("LC", "BPP"),
+    "70": ("WJ", "AC"),  "71": ("WJ", "Brushed"), "72": ("WJ", "Pickled"),
+    "73": ("WJ", "B&P"), "74": ("WJ", "BPP"),
 }
 
-# ── Complete PH_MAP rebuilt from Summary_TestCondition_v3.xlsx ──
-# medium "Aqueous Solution H2SO4" → pH 1
-# medium "1:500 H2SO4" / "Master Solution ..." → pH 4
+# ── Complete PH_MAP rebuilt from Summary_TestCondition_v4.xlsx ──
+#   Medium "Aqueous Solution H2SO4"              → pH 1
+#   Medium "1:500 H2SO4" / "Master Solution ..." → pH 4
+#
+#   A folder maps either to a single int (all tests share that pH) or to a
+#   {test: pH} dict where Test 1 and Test 2 used different media.
 PH_MAP = {
-    "50": {"01":4, "05":1},
-    "51": {"02":4},
-    "52": {"03":1, "10":4},          # 52_03 corrected to pH1 (H2SO4)
-    "53": {"01":4, "04":1},
-    "60": {"02":1, "10":4},
-    "61": {"02":4, "04":4, "06":1},  # 61_04 and 61_06 added
-    "62": {"06":1, "09":4, "10":4},  # 62_06, 62_09, 62_10 added; 62_03 removed (not in data)
-    "63": {"01":4, "03":1, "04":4, "05":1},  # 63_04 added; 63_03→pH1, 63_05→pH1 corrected
-    "64": {"01":1, "05":4, "09":4, "27":4, "29":4},  # 64_01→pH1, 64_09→pH4, 64_27/29 added
-    "70": {"02":4, "03":1},
-    "71": {"02":4},
-    "72": {"07":1, "10":4},
-    "73": {"01":1, "03":1, "04":4, "07":4, "09":1},  # 73_01→pH1, 73_04/07 added, 73_09→pH1
-    "74": {"01":4, "03":4, "05":4, "06":1},
+    "50": {"01": 4, "02": 4, "04": 1, "05": 1},
+    "51": {"01": 4, "02": 4, "03": 1, "05": 4, "06": 4},
+    "52": {"01": 1, "03": 4, "04": 4, "10": 4},
+    "53": {"01": 4, "02": 4, "03": 1, "04": 1},
+    "60": {"01": 1, "02": 1, "09": 4, "10": 4},
+    "61": {"01": 4, "02": 4, "03": 4, "04": 4, "06": 1, "07": 1},
+    "62": {"01": 4, "02": 1, "04": 1, "05": 4, "06": 1, "09": 4, "10": 4},
+    "63": {"01": 4, "02": 4, "03": 4,
+           "04": {"1": 1, "2": 4},          # T1 pH1 (H2SO4), T2 pH4 (Master)
+           "05": 1, "07": 1, "08": 4,
+           "09": {"1": 4, "2": 1}},         # T1 pH4 (1:500), T2 pH1 (H2SO4)
+    "64": {"01": 1, "03": 4, "05": 4, "06": 1, "09": 4,
+           "10": {"1": 4, "2": 1},          # T1 pH4 (1:500), T2 pH1 (H2SO4)
+           "27": 4, "29": 4},
+    "70": {"01": 4, "02": 4, "03": 1, "04": 1},
+    "71": {"01": 4, "02": 4, "03": 1},
+    "72": {"02": 4, "07": 1, "08": 1, "10": 4},
+    "73": {"01": 1, "02": 1, "03": 1, "04": 4, "05": 4, "06": 4, "07": 4,
+           "09": {"1": 4, "2": 1},          # T1 pH4 (1:500), T2 pH1 (H2SO4)
+           "10": 4},
+    "74": {"01": 4, "02": 4, "03": 4, "05": 4, "06": 1, "07": 1},
 }
+
+
+def resolve_ph(sample, folder, test):
+    """Look up pH from PH_MAP, honouring per-test entries where present."""
+    entry = PH_MAP.get(str(sample), {}).get(str(folder))
+    if entry is None:
+        return None
+    if isinstance(entry, dict):
+        m = re.search(r"\d+", str(test))
+        t = m.group(0) if m else None
+        if t and t in entry:
+            return entry[t]
+        return None                          # unknown test for a conflict folder
+    return entry
+
 
 def get_mark_colour(cut, ph, folder):
     return FOLDER_COLOURS.get((cut, str(ph), str(folder)), FALLBACK_COLOUR)
@@ -143,13 +181,14 @@ def load_uploaded(lsv_bytes, ocp_bytes):
     # ── LSV ──────────────────────────────────────────────────
     df = pd.read_excel(io.BytesIO(lsv_bytes), sheet_name="LSV")
     parsed = df["File"].apply(lambda x: pd.Series(parse_lsv_path(x)))
-    parsed.columns = ["sample","folder","test","point"]
+    parsed.columns = ["sample", "folder", "test", "point"]
     df = pd.concat([df, parsed], axis=1)
     df["sample"] = df["sample"].astype(str)
     df["folder"] = df["folder"].astype(str)
-    df["pH"]        = df.apply(lambda r: PH_MAP.get(r["sample"],{}).get(r["folder"],None), axis=1)
-    df["cut"]       = df["sample"].map(lambda s: SAMPLE_META.get(s,("",""))[0])
-    df["condition"] = df["sample"].map(lambda s: SAMPLE_META.get(s,("",""))[1])
+    df["pH"]        = df.apply(
+        lambda r: resolve_ph(r["sample"], r["folder"], r.get("test")), axis=1)
+    df["cut"]       = df["sample"].map(lambda s: SAMPLE_META.get(s, ("", ""))[0])
+    df["condition"] = df["sample"].map(lambda s: SAMPLE_META.get(s, ("", ""))[1])
 
     main_lsv = df[
         df["sample"].isin(SAMPLE_META) &
@@ -158,7 +197,7 @@ def load_uploaded(lsv_bytes, ocp_bytes):
     ].copy()
 
     rows = []
-    param_map = {"Ecorr_fitted_V":"Ecorr","Icorr_abs":"Icorr","Epp_V":"Epp"}
+    param_map = {"Ecorr_fitted_V": "Ecorr", "Icorr_abs": "Icorr", "Epp_V": "Epp"}
     for _, r in main_lsv.iterrows():
         for pcol, pname in param_map.items():
             val = r.get(pcol)
@@ -184,13 +223,14 @@ def load_uploaded(lsv_bytes, ocp_bytes):
     ocp = pd.read_excel(io.BytesIO(ocp_bytes), sheet_name="Sheet1")
     ocp_parsed = ocp.apply(
         lambda r: pd.Series(parse_ocp_path(r["file_path"], r["file_name"])), axis=1)
-    ocp_parsed.columns = ["sample","folder","test","point","ocp_num"]
+    ocp_parsed.columns = ["sample", "folder", "test", "point", "ocp_num"]
     ocp = pd.concat([ocp, ocp_parsed], axis=1)
     ocp["sample"] = ocp["sample"].astype(str)
     ocp["folder"] = ocp["folder"].astype(str)
-    ocp["pH"]        = ocp.apply(lambda r: PH_MAP.get(r["sample"],{}).get(r["folder"],None), axis=1)
-    ocp["cut"]       = ocp["sample"].map(lambda s: SAMPLE_META.get(s,("",""))[0])
-    ocp["condition"] = ocp["sample"].map(lambda s: SAMPLE_META.get(s,("",""))[1])
+    ocp["pH"]        = ocp.apply(
+        lambda r: resolve_ph(r["sample"], r["folder"], r.get("test")), axis=1)
+    ocp["cut"]       = ocp["sample"].map(lambda s: SAMPLE_META.get(s, ("", ""))[0])
+    ocp["condition"] = ocp["sample"].map(lambda s: SAMPLE_META.get(s, ("", ""))[1])
 
     main_ocp = ocp[
         ocp["sample"].isin(SAMPLE_META) &
@@ -225,8 +265,8 @@ def load_prefilled():
         raw = pd.read_excel("ElectrolyzerWhisker_Final.xlsx",
                             sheet_name="Data", header=3)
         raw.columns = (
-            ["include","sample","cut","condition","pH","direction",
-             "parameter","value","unit","folder","test","r2"]
+            ["include", "sample", "cut", "condition", "pH", "direction",
+             "parameter", "value", "unit", "folder", "test", "r2"]
             + list(raw.columns[12:])
         )
         raw = raw[raw["include"] == "YES"].copy()
@@ -241,8 +281,8 @@ def load_prefilled():
         raw["point"]   = "?"
         raw["source"]  = raw["parameter"].apply(
             lambda p: "OCP" if str(p).startswith("OCP") else "LSV")
-        return raw[["sample","cut","condition","pH","direction","parameter",
-                    "value","r2","test","folder","point","source","row_id"]].copy()
+        return raw[["sample", "cut", "condition", "pH", "direction", "parameter",
+                    "value", "r2", "test", "folder", "point", "source", "row_id"]].copy()
     except Exception:
         return None
 
@@ -286,7 +326,7 @@ def make_figure(df, param, pH_filter, dir_filter,
         sub = sub[sub["sample"].str.upper() == sample_filter.upper()]
     sub = sub[~sub["row_id"].isin(deleted_ids)].copy()
 
-    for col_name, default in [("test","1"),("folder","01"),("pH","1"),("point","?")]:
+    for col_name, default in [("test", "1"), ("folder", "01"), ("pH", "1"), ("point", "?")]:
         if col_name not in sub.columns: sub[col_name] = default
         sub[col_name] = sub[col_name].fillna(default).astype(str)
 
@@ -347,7 +387,7 @@ def make_figure(df, param, pH_filter, dir_filter,
                 fillcolor="rgba(240,244,248,0.55)",
                 line=dict(width=0), layer="below")
 
-        for cut in ["LC","WJ"]:
+        for cut in ["LC", "WJ"]:
             if cut not in cuts_with_data:
                 continue
 
@@ -355,7 +395,7 @@ def make_figure(df, param, pH_filter, dir_filter,
             fill = CUT_FILL[cut]
             bx   = cx + CUT_OFFSET[cut]
 
-            csub = sub[(sub["condition"]==cond) & (sub["cut"]==cut)]
+            csub = sub[(sub["condition"] == cond) & (sub["cut"] == cut)]
             vals = csub["value"].dropna().values
             if len(vals) == 0:
                 continue
@@ -413,7 +453,7 @@ def make_figure(df, param, pH_filter, dir_filter,
                     hovertemplate=f"<b>Outlier ({cut})</b>: %{{y:.5f}}<extra></extra>"))
 
             # Raw data marks
-            np.random.seed(42 + (0 if cut=="LC" else 1)*100 + ci*10)
+            np.random.seed(42 + (0 if cut == "LC" else 1)*100 + ci*10)
             jitter_w = box_hw * 0.55
 
             for ph_val in sorted(csub["pH"].unique()):
@@ -439,8 +479,8 @@ def make_figure(df, param, pH_filter, dir_filter,
                         show_m   = leg_key not in added_mark_legend
 
                         jitter = np.random.uniform(-jitter_w, jitter_w, len(tvals))
-                        custom = tph[["row_id","sample","folder","test",
-                                      "point","pH","direction"]].values.tolist()
+                        custom = tph[["row_id", "sample", "folder", "test",
+                                      "point", "pH", "direction"]].values.tolist()
 
                         fig.add_trace(go.Scatter(
                             x=(bx + jitter).tolist(),
@@ -482,7 +522,7 @@ def make_figure(df, param, pH_filter, dir_filter,
     # Cut labels — only for cuts with data
     if conds:
         first_cx = slot / 2
-        for cut_lbl in ["LC","WJ"]:
+        for cut_lbl in ["LC", "WJ"]:
             if cut_lbl not in cuts_with_data:
                 continue
             fig.add_annotation(
@@ -561,7 +601,7 @@ def main():
 
     with st.sidebar:
         st.header("📂 Data source")
-        src = st.radio("Load from:", ["Upload raw files","Pre-filled Excel"])
+        src = st.radio("Load from:", ["Upload raw files", "Pre-filled Excel"])
 
         if src == "Upload raw files":
             lf = st.file_uploader("batch_fit_summary.xlsx", type=["xlsx"])
@@ -600,7 +640,7 @@ def main():
 
         is_ocp     = param.startswith("OCP")
         dir_filter = ("Both" if is_ocp
-                      else st.selectbox("Direction",["Both","Anodic","Cathodic"]))
+                      else st.selectbox("Direction", ["Both", "Anodic", "Cathodic"]))
 
         samp_opts     = [""] + sorted(df["sample"].unique())
         sample_filter = st.selectbox("Sample (blank = all)", samp_opts)
@@ -622,25 +662,51 @@ def main():
             unsafe_allow_html=True)
         st.markdown("**Colour = subsample folder**")
         groups = [
-            ("LC pH 1",[
-                ("#FF1744","S60_01, S64_01"),("#E53935","S60_02"),
-                ("#B71C1C","S52_03, S63_03"),("#F06292","S53_04, S63_04"),
-                ("#FF7043","S50_05, S63_05"),("#E040FB","S61_06, S62_06"),
-                ("#7B1FA2","S64_09"),]),
-            ("LC pH 4",[
-                ("#FB8C00","S50_01, S53_01, S63_01"),("#F9A825","S51_02, S61_02"),
-                ("#FFD600","S64_03"),("#FFAB40","S61_04"),
-                ("#FDD835","S64_05"),("#A5D6A7","S64_09 (pH4)"),
-                ("#A1887F","S52_10, S60_10"),
-                ("#26C6DA","S64_27"),("#00BFA5","S64_29"),]),
-            ("WJ pH 1",[
-                ("#0D47A1","S73_01"),("#1565C0","S70_03, S73_03"),
-                ("#283593","S74_06"),("#4527A0","S72_07"),]),
-            ("WJ pH 4",[
-                ("#00897B","S74_01"),("#00ACC1","S70_02, S71_02"),
-                ("#43A047","S74_03"),("#F57C00","S73_04"),
-                ("#7CB342","S74_05"),("#8D6E63","S73_07"),
-                ("#26A69A","S73_09"),("#0288D1","S72_10"),]),
+            ("LC pH 1", [
+                ("#FF1744", "S52_01, S60_01, S64_01"),
+                ("#E53935", "S60_02, S62_02"),
+                ("#B71C1C", "S51_03, S53_03"),
+                ("#F06292", "S50_04, S53_04, S62_04, S63_04 (T1)"),
+                ("#FF7043", "S50_05, S63_05"),
+                ("#E040FB", "S61_06, S62_06, S64_06"),
+                ("#D81B60", "S61_07, S63_07"),
+                ("#7B1FA2", "S63_09 (T2)"),
+                ("#C2185B", "S64_10 (T2)"),
+            ]),
+            ("LC pH 4", [
+                ("#FB8C00", "S50_01, S51_01, S53_01, S61_01, S62_01, S63_01"),
+                ("#F9A825", "S50_02, S51_02, S53_02, S61_02, S63_02"),
+                ("#FFD600", "S52_03, S61_03, S63_03, S64_03"),
+                ("#FFAB40", "S52_04, S61_04, S63_04 (T2)"),
+                ("#FDD835", "S51_05, S62_05, S64_05"),
+                ("#FF6F00", "S51_06"),
+                ("#FFB300", "S63_08"),
+                ("#A5D6A7", "S60_09, S62_09, S63_09 (T1), S64_09"),
+                ("#A1887F", "S52_10, S60_10, S62_10, S64_10 (T1)"),
+                ("#26C6DA", "S64_27"),
+                ("#00BFA5", "S64_29"),
+            ]),
+            ("WJ pH 1", [
+                ("#0D47A1", "S73_01"),
+                ("#1E88E5", "S73_02"),
+                ("#1565C0", "S70_03, S71_03, S73_03"),
+                ("#3949AB", "S70_04"),
+                ("#283593", "S74_06"),
+                ("#4527A0", "S72_07, S74_07"),
+                ("#5C6BC0", "S72_08"),
+                ("#039BE5", "S73_09 (T2)"),
+            ]),
+            ("WJ pH 4", [
+                ("#00897B", "S70_01, S71_01, S74_01"),
+                ("#00ACC1", "S70_02, S71_02, S72_02, S74_02"),
+                ("#43A047", "S74_03"),
+                ("#F57C00", "S73_04"),
+                ("#7CB342", "S73_05, S74_05"),
+                ("#009688", "S73_06"),
+                ("#8D6E63", "S73_07"),
+                ("#26A69A", "S73_09 (T1)"),
+                ("#0288D1", "S72_10, S73_10"),
+            ]),
         ]
         for group_title, entries in groups:
             st.markdown(f"*{group_title}*")
@@ -699,9 +765,9 @@ def main():
                 ph=str(cdata[5]);   direction=str(cdata[6])
                 raw_val = pt.get("y", float("nan"))
             else:
-                rid=str(cdata[0]) if isinstance(cdata,list) else str(cdata)
+                rid=str(cdata[0]) if isinstance(cdata, list) else str(cdata)
                 samp=folder=test=point=ph=direction="?"
-                raw_val=pt.get("y",float("nan"))
+                raw_val=pt.get("y", float("nan"))
 
             if rid and rid not in st.session_state.deleted_ids:
                 row_info = df[df["row_id"]==rid]
@@ -711,23 +777,23 @@ def main():
                         "row_id":    rid,
                         "parameter": r.get("parameter", param),
                         "sample":    r.get("sample", samp),
-                        "cut":       r.get("cut","?"),
-                        "condition": r.get("condition","?"),
+                        "cut":       r.get("cut", "?"),
+                        "condition": r.get("condition", "?"),
                         "pH":        r.get("pH", ph),
                         "direction": r.get("direction", direction),
                         "folder":    r.get("folder", folder),
                         "test":      r.get("test", test),
                         "point":     r.get("point", point),
-                        "source":    r.get("source","?"),
+                        "source":    r.get("source", "?"),
                         "value":     float(r.get("value", raw_val)),
                         "r2":        r.get("r2", None),
                     }
                 else:
                     meta = {
-                        "row_id":rid,"parameter":param,"sample":samp,"cut":"?",
-                        "condition":"?","pH":ph,"direction":direction,
-                        "folder":folder,"test":test,"point":point,
-                        "source":"?","value":raw_val,"r2":None}
+                        "row_id":rid, "parameter":param, "sample":samp, "cut":"?",
+                        "condition":"?", "pH":ph, "direction":direction,
+                        "folder":folder, "test":test, "point":point,
+                        "source":"?", "value":raw_val, "r2":None}
                 st.session_state.deleted_ids.add(rid)
                 st.session_state.deleted_meta[rid] = meta
                 st.rerun()
@@ -748,19 +814,19 @@ def main():
         meta_rows = list(st.session_state.deleted_meta.values())
         if meta_rows:
             exc_df = pd.DataFrame(meta_rows)[[
-                "parameter","sample","cut","condition","pH",
-                "direction","folder","test","point","source","value","r2"
+                "parameter", "sample", "cut", "condition", "pH",
+                "direction", "folder", "test", "point", "source", "value", "r2"
             ]].copy()
             exc_df["value"] = exc_df["value"].round(6)
             exc_df["r2"]    = exc_df["r2"].apply(
-                lambda x: round(float(x),4) if pd.notna(x) else "—")
-            exc_df.columns  = ["Parameter","Sample","Cut","Condition","pH",
-                                "Direction","Folder","Test","Point",
-                                "Source","Value","R²"]
+                lambda x: round(float(x), 4) if pd.notna(x) else "—")
+            exc_df.columns  = ["Parameter", "Sample", "Cut", "Condition", "pH",
+                                "Direction", "Folder", "Test", "Point",
+                                "Source", "Value", "R²"]
 
             def _style_exc(row):
-                bg = "#FAD7D3" if row["Cut"]=="LC" else "#D0E8F7"
-                return [f"background-color:{bg}" if c=="Cut" else ""
+                bg = "#FAD7D3" if row["Cut"] == "LC" else "#D0E8F7"
+                return [f"background-color:{bg}" if c == "Cut" else ""
                         for c in exc_df.columns]
 
             st.dataframe(exc_df.style.apply(_style_exc, axis=1),
@@ -799,9 +865,9 @@ def main():
 
     stat_rows = []
     for cond in COND_ORDER:
-        for cut in ["LC","WJ"]:
+        for cut in ["LC", "WJ"]:
             vals = sub[
-                (sub["condition"]==cond) & (sub["cut"]==cut)
+                (sub["condition"] == cond) & (sub["cut"] == cut)
             ]["value"].dropna().values
             if len(vals) == 0: continue
             st_ = compute_stats(vals, sd_mult)
@@ -823,8 +889,8 @@ def main():
     if stat_rows:
         sdf = pd.DataFrame(stat_rows)
         def _color_row(row):
-            bg = "#FAD7D3" if row["Cut"]=="LC" else "#D0E8F7"
-            return [f"background-color:{bg}" if i==1 else ""
+            bg = "#FAD7D3" if row["Cut"] == "LC" else "#D0E8F7"
+            return [f"background-color:{bg}" if i == 1 else ""
                     for i in range(len(row))]
         st.dataframe(sdf.style.apply(_color_row, axis=1),
                      use_container_width=True, height=300)
