@@ -1,28 +1,13 @@
 """
-Electrolyzer Whisker Plot App  v3.2
+Electrolyzer Whisker Plot App  v3.3
 SS316L Corrosion Study
 
-Upload files:
-  • batch_fit_summary.xlsx  (sheet: LSV)
-  • ocp_summary.xlsx        (sheet: Sheet1)
-
-Changes v3.2:
-  - Y-axis labels no longer show "vs. RHE" (now plain "V")
-  - PH_MAP fully rebuilt from Summary_TestCondition_v4.xlsx using the
-    "Medium" column (Aqueous Solution H2SO4 → pH 1; 1:500 H2SO4 and
-    Master Solution → pH 4)
-  - Per-TEST pH resolution: four folders use different media on Test 1 vs
-    Test 2, so their pH now depends on the test number:
-        63_04  → T1 pH1, T2 pH4
-        63_09  → T1 pH4, T2 pH1
-        64_10  → T1 pH4, T2 pH1
-        73_09  → T1 pH4, T2 pH1
-  - FOLDER_COLOURS extended to cover every cut × pH × folder combination
-    present in v4 (added LC1 07/10, LC4 06/08, WJ1 02/04/08/09, WJ4 06)
-  - Mark-encoding legend regenerated to match the v4 sample/folder/pH map
-  - NEW: sidebar "✏️ Customise plot" — per-test shape picker and
-    per-sample/folder colour picker (scoped to what's currently plotted),
-    with a reset button. Fill logic generalised for any chosen symbol.
+Changes v3.3:
+  - NEW: "🗑 Exclude by legend group" multiselect below the chart.
+    Selecting one or more legend groups (e.g. "S63_04  ●T1") excludes ALL
+    row_ids belonging to that group; the whisker auto-scales accordingly.
+  - Excluded-by-legend entries appear in the same excluded-points table and
+    can be restored individually or via "Restore all".
 """
 
 import io, re
@@ -42,68 +27,58 @@ st.set_page_config(
 #  COLOURS  (cut × pH × folder)
 # ─────────────────────────────────────────────────────────────
 FOLDER_COLOURS = {
-    # ── LC pH 1 — red / pink / purple family ──
-    ("LC", "1", "01"): "#FF1744",   # S52_01, S60_01, S64_01
-    ("LC", "1", "02"): "#E53935",   # S60_02, S62_02
-    ("LC", "1", "03"): "#B71C1C",   # S51_03, S53_03
-    ("LC", "1", "04"): "#F06292",   # S50_04, S53_04, S62_04, S63_04(T1)
-    ("LC", "1", "05"): "#FF7043",   # S50_05, S63_05
-    ("LC", "1", "06"): "#E040FB",   # S61_06, S62_06, S64_06
-    ("LC", "1", "07"): "#D81B60",   # S61_07, S63_07          ← NEW
-    ("LC", "1", "09"): "#7B1FA2",   # S63_09(T2)
-    ("LC", "1", "10"): "#C2185B",   # S64_10(T2)              ← NEW
-
-    # ── LC pH 4 — orange / amber / warm family ──
-    ("LC", "4", "01"): "#FB8C00",   # S50_01, S51_01, S53_01, S61_01, S62_01, S63_01
-    ("LC", "4", "02"): "#F9A825",   # S50_02, S51_02, S53_02, S61_02, S63_02
-    ("LC", "4", "03"): "#FFD600",   # S52_03, S61_03, S63_03, S64_03
-    ("LC", "4", "04"): "#FFAB40",   # S52_04, S61_04, S63_04(T2)
-    ("LC", "4", "05"): "#FDD835",   # S51_05, S62_05, S64_05
-    ("LC", "4", "06"): "#FF6F00",   # S51_06                  ← NEW
-    ("LC", "4", "08"): "#FFB300",   # S63_08                  ← NEW
-    ("LC", "4", "09"): "#A5D6A7",   # S60_09, S62_09, S63_09(T1), S64_09
-    ("LC", "4", "10"): "#A1887F",   # S52_10, S60_10, S62_10, S64_10(T1)
-    ("LC", "4", "27"): "#26C6DA",   # S64_27
-    ("LC", "4", "29"): "#00BFA5",   # S64_29
-
-    # ── WJ pH 1 — dark blue / violet family ──
-    ("WJ", "1", "01"): "#0D47A1",   # S73_01
-    ("WJ", "1", "02"): "#1E88E5",   # S73_02                  ← NEW
-    ("WJ", "1", "03"): "#1565C0",   # S70_03, S71_03, S73_03
-    ("WJ", "1", "04"): "#3949AB",   # S70_04                  ← NEW
-    ("WJ", "1", "06"): "#283593",   # S74_06
-    ("WJ", "1", "07"): "#4527A0",   # S72_07, S74_07
-    ("WJ", "1", "08"): "#5C6BC0",   # S72_08                  ← NEW
-    ("WJ", "1", "09"): "#039BE5",   # S73_09(T2)              ← NEW
-
-    # ── WJ pH 4 — teal / green / cyan family ──
-    ("WJ", "4", "01"): "#00897B",   # S70_01, S71_01, S74_01
-    ("WJ", "4", "02"): "#00ACC1",   # S70_02, S71_02, S72_02, S74_02
-    ("WJ", "4", "03"): "#43A047",   # S74_03
-    ("WJ", "4", "04"): "#F57C00",   # S73_04
-    ("WJ", "4", "05"): "#7CB342",   # S73_05, S74_05
-    ("WJ", "4", "06"): "#009688",   # S73_06                  ← NEW
-    ("WJ", "4", "07"): "#8D6E63",   # S73_07
-    ("WJ", "4", "09"): "#26A69A",   # S73_09(T1)
-    ("WJ", "4", "10"): "#0288D1",   # S72_10, S73_10
+    ("LC", "1", "01"): "#FF1744",
+    ("LC", "1", "02"): "#E53935",
+    ("LC", "1", "03"): "#B71C1C",
+    ("LC", "1", "04"): "#F06292",
+    ("LC", "1", "05"): "#FF7043",
+    ("LC", "1", "06"): "#E040FB",
+    ("LC", "1", "07"): "#D81B60",
+    ("LC", "1", "09"): "#7B1FA2",
+    ("LC", "1", "10"): "#C2185B",
+    ("LC", "4", "01"): "#FB8C00",
+    ("LC", "4", "02"): "#F9A825",
+    ("LC", "4", "03"): "#FFD600",
+    ("LC", "4", "04"): "#FFAB40",
+    ("LC", "4", "05"): "#FDD835",
+    ("LC", "4", "06"): "#FF6F00",
+    ("LC", "4", "08"): "#FFB300",
+    ("LC", "4", "09"): "#A5D6A7",
+    ("LC", "4", "10"): "#A1887F",
+    ("LC", "4", "27"): "#26C6DA",
+    ("LC", "4", "29"): "#00BFA5",
+    ("WJ", "1", "01"): "#0D47A1",
+    ("WJ", "1", "02"): "#1E88E5",
+    ("WJ", "1", "03"): "#1565C0",
+    ("WJ", "1", "04"): "#3949AB",
+    ("WJ", "1", "06"): "#283593",
+    ("WJ", "1", "07"): "#4527A0",
+    ("WJ", "1", "08"): "#5C6BC0",
+    ("WJ", "1", "09"): "#039BE5",
+    ("WJ", "4", "01"): "#00897B",
+    ("WJ", "4", "02"): "#00ACC1",
+    ("WJ", "4", "03"): "#43A047",
+    ("WJ", "4", "04"): "#F57C00",
+    ("WJ", "4", "05"): "#7CB342",
+    ("WJ", "4", "06"): "#009688",
+    ("WJ", "4", "07"): "#8D6E63",
+    ("WJ", "4", "09"): "#26A69A",
+    ("WJ", "4", "10"): "#0288D1",
 }
 FALLBACK_COLOUR = "#9E9E9E"
 TEST_SYMBOL     = {"1": "circle", "2": "x", "3": "diamond", "4": "square"}
 
-# Symbols offered in the shape picker
 SYMBOL_OPTIONS = [
     "circle", "square", "diamond", "triangle-up", "triangle-down",
     "star", "hexagram", "pentagon", "cross", "x",
     "circle-open", "square-open", "diamond-open", "triangle-up-open",
 ]
-# Unicode glyph used in legend labels so they stay honest after customisation
 SYMBOL_GLYPH = {
     "circle": "●", "square": "■", "diamond": "◆", "triangle-up": "▲",
     "triangle-down": "▼", "star": "★", "hexagram": "✶", "pentagon": "⬟",
     "cross": "✚", "x": "✕", "circle-open": "○", "square-open": "□",
     "diamond-open": "◇", "triangle-up-open": "△",
 }
-# Line/open symbols render hollow (no fill); everything else is filled
 _HOLLOW_KEYS = ("open", "x", "cross", "asterisk", "line", "y-up", "y-down")
 def is_filled_symbol(sym):
     return not any(k in str(sym) for k in _HOLLOW_KEYS)
@@ -125,12 +100,6 @@ SAMPLE_META = {
     "73": ("WJ", "B&P"), "74": ("WJ", "BPP"),
 }
 
-# ── Complete PH_MAP rebuilt from Summary_TestCondition_v4.xlsx ──
-#   Medium "Aqueous Solution H2SO4"              → pH 1
-#   Medium "1:500 H2SO4" / "Master Solution ..." → pH 4
-#
-#   A folder maps either to a single int (all tests share that pH) or to a
-#   {test: pH} dict where Test 1 and Test 2 used different media.
 PH_MAP = {
     "50": {"01": 4, "02": 4, "04": 1, "05": 1},
     "51": {"01": 4, "02": 4, "03": 1, "05": 4, "06": 4},
@@ -140,24 +109,23 @@ PH_MAP = {
     "61": {"01": 4, "02": 4, "03": 4, "04": 4, "06": 1, "07": 1},
     "62": {"01": 4, "02": 1, "04": 1, "05": 4, "06": 1, "09": 4, "10": 4},
     "63": {"01": 4, "02": 4, "03": 4,
-           "04": {"1": 1, "2": 4},          # T1 pH1 (H2SO4), T2 pH4 (Master)
+           "04": {"1": 1, "2": 4},
            "05": 1, "07": 1, "08": 4,
-           "09": {"1": 4, "2": 1}},         # T1 pH4 (1:500), T2 pH1 (H2SO4)
+           "09": {"1": 4, "2": 1}},
     "64": {"01": 1, "03": 4, "05": 4, "06": 1, "09": 4,
-           "10": {"1": 4, "2": 1},          # T1 pH4 (1:500), T2 pH1 (H2SO4)
+           "10": {"1": 4, "2": 1},
            "27": 4, "29": 4},
     "70": {"01": 4, "02": 4, "03": 1, "04": 1},
     "71": {"01": 4, "02": 4, "03": 1},
     "72": {"02": 4, "07": 1, "08": 1, "10": 4},
     "73": {"01": 1, "02": 1, "03": 1, "04": 4, "05": 4, "06": 4, "07": 4,
-           "09": {"1": 4, "2": 1},          # T1 pH4 (1:500), T2 pH1 (H2SO4)
+           "09": {"1": 4, "2": 1},
            "10": 4},
     "74": {"01": 4, "02": 4, "03": 4, "05": 4, "06": 1, "07": 1},
 }
 
 
 def resolve_ph(sample, folder, test):
-    """Look up pH from PH_MAP, honouring per-test entries where present."""
     entry = PH_MAP.get(str(sample), {}).get(str(folder))
     if entry is None:
         return None
@@ -166,7 +134,7 @@ def resolve_ph(sample, folder, test):
         t = m.group(0) if m else None
         if t and t in entry:
             return entry[t]
-        return None                          # unknown test for a conflict folder
+        return None
     return entry
 
 
@@ -199,7 +167,6 @@ def parse_ocp_path(fp, fn):
 # ─────────────────────────────────────────────────────────────
 @st.cache_data
 def load_uploaded(lsv_bytes, ocp_bytes):
-    # ── LSV ──────────────────────────────────────────────────
     df = pd.read_excel(io.BytesIO(lsv_bytes), sheet_name="LSV")
     parsed = df["File"].apply(lambda x: pd.Series(parse_lsv_path(x)))
     parsed.columns = ["sample", "folder", "test", "point"]
@@ -240,7 +207,6 @@ def load_uploaded(lsv_bytes, ocp_bytes):
                 "row_id":    f"lsv_{r.name}_{pcol}",
             })
 
-    # ── OCP ──────────────────────────────────────────────────
     ocp = pd.read_excel(io.BytesIO(ocp_bytes), sheet_name="Sheet1")
     ocp_parsed = ocp.apply(
         lambda r: pd.Series(parse_ocp_path(r["file_path"], r["file_name"])), axis=1)
@@ -329,14 +295,79 @@ def compute_stats(vals: np.ndarray, sd_mult: float):
                 mean=clean.mean(), sd=sd, outliers=outliers, clean=clean, raw=s)
 
 # ─────────────────────────────────────────────────────────────
-#  FIGURE
+#  LEGEND GROUP → ROW IDS MAPPING
+# ─────────────────────────────────────────────────────────────
+def build_legendgroup_map(df, param, pH_filter, dir_filter, r2_min,
+                          sample_filter, deleted_ids, log_icorr,
+                          symbol_overrides=None):
+    """
+    Returns a dict:  legend_name -> list[row_id]
+    Only includes mark-data traces (not box/whisker traces).
+    Mirrors the grouping logic in make_figure exactly.
+    """
+    symbol_overrides = symbol_overrides or {}
+
+    def mark_symbol(test):
+        t = str(test)
+        return symbol_overrides.get(t, TEST_SYMBOL.get(t, "circle"))
+
+    is_ocp = param.startswith("OCP")
+    sub = df[df["parameter"] == param].copy()
+    if not is_ocp:
+        if dir_filter != "Both":
+            sub = sub[sub["direction"].str.upper() == dir_filter.upper()]
+        sub = sub[(sub["r2"].isna()) | (sub["r2"] >= r2_min)]
+    if pH_filter != "Both":
+        sub = sub[sub["pH"] == str(pH_filter)]
+    if sample_filter:
+        sub = sub[sub["sample"].str.upper() == sample_filter.upper()]
+    sub = sub[~sub["row_id"].isin(deleted_ids)].copy()
+
+    for col_name, default in [("test", "1"), ("folder", "01"), ("pH", "1"), ("point", "?")]:
+        if col_name not in sub.columns: sub[col_name] = default
+        sub[col_name] = sub[col_name].fillna(default).astype(str)
+
+    if param == "Icorr" and log_icorr:
+        sub = sub[sub["value"] > 0].copy()
+
+    group_map = {}  # leg_name -> [row_ids]
+
+    for cond in COND_ORDER:
+        if cond not in sub["condition"].unique():
+            continue
+        for cut in ["LC", "WJ"]:
+            csub = sub[(sub["condition"] == cond) & (sub["cut"] == cut)]
+            if csub.empty:
+                continue
+            for ph_val in sorted(csub["pH"].unique()):
+                ph_sub = csub[csub["pH"] == ph_val]
+                for folder_val in sorted(ph_sub["folder"].unique()):
+                    for t_val in sorted(csub["test"].unique()):
+                        mask = ((csub["pH"]     == ph_val)     &
+                                (csub["folder"] == folder_val) &
+                                (csub["test"]   == t_val))
+                        tph = csub[mask]
+                        if tph.empty:
+                            continue
+                        symbol = mark_symbol(t_val)
+                        glyph  = SYMBOL_GLYPH.get(symbol, "•")
+                        t_lbl  = f"{glyph}T{t_val}"
+                        actual = sorted(tph["sample"].unique())
+                        samp_fol = ", ".join(f"{s}_{folder_val}" for s in actual)
+                        leg_name = f"{samp_fol}  {t_lbl}"
+                        rids = tph["row_id"].tolist()
+                        if leg_name not in group_map:
+                            group_map[leg_name] = []
+                        group_map[leg_name].extend(rids)
+
+    return group_map
+
+
+# ─────────────────────────────────────────────────────────────
+#  DISCOVER PRESENT (for customise panel)
 # ─────────────────────────────────────────────────────────────
 def discover_present(df, param, pH_filter, dir_filter, r2_min,
                      sample_filter, deleted_ids):
-    """Return (combos, tests) actually shown for the current filter selection.
-    combos: {(cut, pH, folder): sorted [sample_folder labels]}
-    tests : sorted list of test numbers present
-    """
     is_ocp = param.startswith("OCP")
     sub = df[df["parameter"] == param].copy()
     if not is_ocp:
@@ -361,6 +392,9 @@ def discover_present(df, param, pH_filter, dir_filter, r2_min,
     return combos, tests
 
 
+# ─────────────────────────────────────────────────────────────
+#  FIGURE
+# ─────────────────────────────────────────────────────────────
 def make_figure(df, param, pH_filter, dir_filter,
                 r2_min, sd_mult, log_icorr, deleted_ids, sample_filter,
                 color_overrides=None, symbol_overrides=None):
@@ -480,36 +514,30 @@ def make_figure(df, param, pH_filter, dir_filter,
                     legendgroup=f"box_{cut}", showlegend=True))
                 added_box_legend.add(cut)
 
-            # Upper whisker + cap
             fig.add_shape(type="line", x0=bx, x1=bx,
                 y0=st_["q3"], y1=st_["hi"],
                 line=dict(color=col, width=2.2))
             fig.add_shape(type="line",
                 x0=bx-cap_hw, x1=bx+cap_hw, y0=st_["hi"], y1=st_["hi"],
                 line=dict(color=col, width=2.5))
-            # Lower whisker + cap
             fig.add_shape(type="line", x0=bx, x1=bx,
                 y0=st_["lo"], y1=st_["q1"],
                 line=dict(color=col, width=2.2))
             fig.add_shape(type="line",
                 x0=bx-cap_hw, x1=bx+cap_hw, y0=st_["lo"], y1=st_["lo"],
                 line=dict(color=col, width=2.5))
-            # IQR box
             fig.add_shape(type="rect",
                 x0=bx-box_hw, x1=bx+box_hw, y0=st_["q1"], y1=st_["q3"],
                 fillcolor=fill, line=dict(color=col, width=2.5))
-            # Median
             fig.add_shape(type="line",
                 x0=bx-box_hw, x1=bx+box_hw, y0=st_["med"], y1=st_["med"],
                 line=dict(color=col, width=3.5))
-            # Mean
             fig.add_trace(go.Scatter(
                 x=[bx], y=[st_["mean"]], mode="markers",
                 marker=dict(symbol="circle-open", size=12, color=col,
                             line=dict(color=col, width=2.5)),
                 legendgroup=f"box_{cut}", showlegend=False,
                 hovertemplate=f"<b>Mean ({cut}–{cond})</b>: %{{y:.5f}}<extra></extra>"))
-            # Outliers
             if len(st_["outliers"]) > 0:
                 fig.add_trace(go.Scatter(
                     x=[bx]*len(st_["outliers"]), y=st_["outliers"].tolist(),
@@ -519,7 +547,6 @@ def make_figure(df, param, pH_filter, dir_filter,
                     legendgroup=f"box_{cut}", showlegend=False,
                     hovertemplate=f"<b>Outlier ({cut})</b>: %{{y:.5f}}<extra></extra>"))
 
-            # Raw data marks
             np.random.seed(42 + (0 if cut == "LC" else 1)*100 + ci*10)
             jitter_w = box_hw * 0.55
 
@@ -587,7 +614,6 @@ def make_figure(df, param, pH_filter, dir_filter,
                 font=dict(size=10, color=col, family="Arial"),
                 xanchor="center")
 
-    # Cut labels — only for cuts with data
     if conds:
         first_cx = slot / 2
         for cut_lbl in ["LC", "WJ"]:
@@ -663,10 +689,10 @@ def main():
         "Colour = subsample folder  ·  Click marks to exclude"
     )
 
-    if "deleted_ids"     not in st.session_state: st.session_state.deleted_ids     = set()
-    if "deleted_meta"    not in st.session_state: st.session_state.deleted_meta    = {}
-    if "df"              not in st.session_state: st.session_state.df              = None
-    if "color_overrides" not in st.session_state: st.session_state.color_overrides = {}
+    if "deleted_ids"      not in st.session_state: st.session_state.deleted_ids      = set()
+    if "deleted_meta"     not in st.session_state: st.session_state.deleted_meta     = {}
+    if "df"               not in st.session_state: st.session_state.df               = None
+    if "color_overrides"  not in st.session_state: st.session_state.color_overrides  = {}
     if "symbol_overrides" not in st.session_state: st.session_state.symbol_overrides = {}
 
     with st.sidebar:
@@ -786,7 +812,6 @@ def main():
                     f' <span style="font-size:11px;color:#333">{label}</span>',
                     unsafe_allow_html=True)
 
-        # ── Customise colours & shapes for what's currently plotted ──
         st.divider()
         st.header("✏️ Customise plot")
         combos, tests = discover_present(
@@ -857,6 +882,13 @@ def main():
     c3.metric("Excluded",           len(st.session_state.deleted_ids))
     c4.metric("Conditions",         active["condition"].nunique())
 
+    # ── Build legend-group → row_ids map for the exclude widget ──
+    lg_map = build_legendgroup_map(
+        df, param, pH_filter, dir_filter, r2_min, sample_filter,
+        st.session_state.deleted_ids, log_icorr,
+        symbol_overrides=st.session_state.symbol_overrides,
+    )
+
     fig = make_figure(
         df=df, param=param, pH_filter=pH_filter, dir_filter=dir_filter,
         r2_min=r2_min, sd_mult=sd_mult, log_icorr=log_icorr,
@@ -876,6 +908,59 @@ def main():
              f"{sample_filter}_{len(st.session_state.deleted_ids)}_{_ov}"),
     )
 
+    # ── Legend-group bulk exclude widget ──────────────────────
+    if lg_map:
+        with st.expander("🗑 Exclude by legend group (click-to-remove from whisker)", expanded=False):
+            st.caption(
+                "Select one or more legend groups below to exclude **all** their "
+                "points at once. The whisker and statistics will auto-scale."
+            )
+            lg_names = sorted(lg_map.keys())
+            chosen_groups = st.multiselect(
+                "Legend groups to exclude:",
+                options=lg_names,
+                default=[],
+                key=f"lg_exclude_{param}_{pH_filter}_{dir_filter}_{sample_filter}",
+                placeholder="Start typing a sample name…",
+            )
+            if st.button("🗑 Exclude selected groups", use_container_width=True,
+                         disabled=len(chosen_groups) == 0,
+                         key=f"lg_exclude_btn_{param}"):
+                df_ref = st.session_state.df
+                for grp_name in chosen_groups:
+                    for rid in lg_map.get(grp_name, []):
+                        if rid not in st.session_state.deleted_ids:
+                            row_info = df_ref[df_ref["row_id"] == rid]
+                            if not row_info.empty:
+                                r = row_info.iloc[0]
+                                meta = {
+                                    "row_id":    rid,
+                                    "parameter": r.get("parameter", param),
+                                    "sample":    r.get("sample", "?"),
+                                    "cut":       r.get("cut", "?"),
+                                    "condition": r.get("condition", "?"),
+                                    "pH":        r.get("pH", "?"),
+                                    "direction": r.get("direction", "?"),
+                                    "folder":    r.get("folder", "?"),
+                                    "test":      r.get("test", "?"),
+                                    "point":     r.get("point", "?"),
+                                    "source":    r.get("source", "?"),
+                                    "value":     float(r.get("value", float("nan"))),
+                                    "r2":        r.get("r2", None),
+                                }
+                            else:
+                                meta = {
+                                    "row_id": rid, "parameter": param,
+                                    "sample": "?", "cut": "?", "condition": "?",
+                                    "pH": "?", "direction": "?", "folder": "?",
+                                    "test": "?", "point": "?", "source": "?",
+                                    "value": float("nan"), "r2": None,
+                                }
+                            st.session_state.deleted_ids.add(rid)
+                            st.session_state.deleted_meta[rid] = meta
+                st.rerun()
+
+    # ── Point-click exclude (existing behaviour) ──────────────
     if event and event.get("selection") and event["selection"].get("points"):
         for pt in event["selection"]["points"]:
             cdata = pt.get("customdata")
