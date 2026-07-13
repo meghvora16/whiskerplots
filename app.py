@@ -1,16 +1,33 @@
 """
-Electrolyzer Whisker Plot App  v3.3
+Electrolyzer Whisker Plot App  v3.4
 SS316L Corrosion Study
 
+Changes v3.4 (this version):
+  - NEW: The app no longer silently drops samples/folders that aren't in the
+    hardcoded SAMPLE_META / PH_MAP tables. Any time you upload a new
+    batch_fit_summary.xlsx / ocp_summary.xlsx that contains a sample number,
+    subsample folder, or test that the app doesn't recognise, a
+    "🆕 New / unmapped data" panel appears in the sidebar so you can tell the
+    app the Cut / Condition / pH for that new data, right in the UI —
+    no code edits required.
+  - These assignments are kept in session state AND auto-saved to a small
+    JSON file (sample_mapping_overrides.json) next to this script, so they
+    persist the next time you run the app. Re-uploading an updated summary
+    workbook with more experiments will "just work" as long as any brand
+    new sample/folder combos are mapped once via that panel.
+  - Internals: parsing of the raw Excel files is now cached separately from
+    the pH / cut / condition resolution step, so changing a mapping in the
+    sidebar re-resolves instantly without re-parsing the workbook.
+
 Changes v3.3:
-  - NEW: "🗑 Exclude by legend group" multiselect below the chart.
+  - "🗑 Exclude by legend group" multiselect below the chart.
     Selecting one or more legend groups (e.g. "S63_04  ●T1") excludes ALL
     row_ids belonging to that group; the whisker auto-scales accordingly.
   - Excluded-by-legend entries appear in the same excluded-points table and
     can be restored individually or via "Restore all".
 """
 
-import io, re
+import io, re, os, json
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -22,6 +39,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+MAPPING_FILE = "sample_mapping_overrides.json"
 
 # ─────────────────────────────────────────────────────────────
 #  COLOURS  (cut × pH × folder)
@@ -92,7 +111,11 @@ PARAM_UNITS = {
     "Ecorr": "V", "Icorr": "A dm⁻²", "Epp": "V",
 }
 
-SAMPLE_META = {
+# These two tables are now treated as the *starting point* / defaults.
+# Anything new that shows up in an uploaded workbook and isn't covered here
+# gets picked up by the "🆕 New / unmapped data" sidebar panel instead of
+# being silently dropped.
+BASE_SAMPLE_META = {
     "50": ("LC", "AC"),  "51": ("LC", "Brushed"), "52": ("LC", "Pickled"), "53": ("LC", "B&P"),
     "60": ("LC", "AC"),  "61": ("LC", "Brushed"), "62": ("LC", "Pickled"),
     "63": ("LC", "B&P"), "64": ("LC", "BPP"),
@@ -100,7 +123,7 @@ SAMPLE_META = {
     "73": ("WJ", "B&P"), "74": ("WJ", "BPP"),
 }
 
-PH_MAP = {
+BASE_PH_MAP = {
     "50": {"01": 4, "02": 4, "04": 1, "05": 1},
     "51": {"01": 4, "02": 4, "03": 1, "05": 4, "06": 4},
     "52": {"01": 1, "03": 4, "04": 4, "10": 4},
@@ -125,8 +148,53 @@ PH_MAP = {
 }
 
 
-def resolve_ph(sample, folder, test):
-    entry = PH_MAP.get(str(sample), {}).get(str(folder))
+# ─────────────────────────────────────────────────────────────
+#  PERSISTED MAPPING OVERRIDES (new samples / folders / pH)
+# ─────────────────────────────────────────────────────────────
+def load_mapping_overrides():
+    """Load previously-saved user mappings for new samples/folders from disk."""
+    if os.path.exists(MAPPING_FILE):
+        try:
+            with open(MAPPING_FILE, "r") as f:
+                data = json.load(f)
+            return (data.get("sample_meta", {}), data.get("ph_map", {}))
+        except Exception:
+            return {}, {}
+    return {}, {}
+
+
+def save_mapping_overrides(extra_sample_meta, extra_ph_map):
+    try:
+        with open(MAPPING_FILE, "w") as f:
+            json.dump({"sample_meta": extra_sample_meta,
+                       "ph_map": extra_ph_map}, f, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def merge_sample_meta(extra):
+    """extra: {sample: [cut, condition]} -> merged dict of sample -> (cut, condition)"""
+    merged = dict(BASE_SAMPLE_META)
+    for samp, v in (extra or {}).items():
+        merged[str(samp)] = tuple(v)
+    return merged
+
+
+def merge_ph_map(extra):
+    """extra: {sample: {folder: ph_or_{test:ph}}} deep-merged onto BASE_PH_MAP"""
+    merged = json.loads(json.dumps(BASE_PH_MAP))
+    for samp, folmap in (extra or {}).items():
+        samp = str(samp)
+        if samp not in merged:
+            merged[samp] = {}
+        for fol, ph_entry in folmap.items():
+            merged[samp][str(fol)] = ph_entry
+    return merged
+
+
+def resolve_ph(sample, folder, test, ph_map):
+    entry = ph_map.get(str(sample), {}).get(str(folder))
     if entry is None:
         return None
     if isinstance(entry, dict):
@@ -163,50 +231,22 @@ def parse_ocp_path(fp, fn):
             ocp_n.group(1) if ocp_n else "1")
 
 # ─────────────────────────────────────────────────────────────
-#  DATA LOADING
+#  RAW PARSING (cached on file bytes only — cheap to keep cached,
+#  independent of any sample/pH mapping so changing a mapping in the
+#  sidebar never re-triggers a re-parse of the workbook)
 # ─────────────────────────────────────────────────────────────
 @st.cache_data
-def load_uploaded(lsv_bytes, ocp_bytes):
+def parse_raw_lsv(lsv_bytes):
     df = pd.read_excel(io.BytesIO(lsv_bytes), sheet_name="LSV")
     parsed = df["File"].apply(lambda x: pd.Series(parse_lsv_path(x)))
     parsed.columns = ["sample", "folder", "test", "point"]
     df = pd.concat([df, parsed], axis=1)
     df["sample"] = df["sample"].astype(str)
     df["folder"] = df["folder"].astype(str)
-    df["pH"]        = df.apply(
-        lambda r: resolve_ph(r["sample"], r["folder"], r.get("test")), axis=1)
-    df["cut"]       = df["sample"].map(lambda s: SAMPLE_META.get(s, ("", ""))[0])
-    df["condition"] = df["sample"].map(lambda s: SAMPLE_META.get(s, ("", ""))[1])
+    return df
 
-    main_lsv = df[
-        df["sample"].isin(SAMPLE_META) &
-        df["pH"].notna() &
-        df["scan_direction"].notna()
-    ].copy()
-
-    rows = []
-    param_map = {"Ecorr_fitted_V": "Ecorr", "Icorr_abs": "Icorr", "Epp_V": "Epp"}
-    for _, r in main_lsv.iterrows():
-        for pcol, pname in param_map.items():
-            val = r.get(pcol)
-            if pd.isna(val): continue
-            r2 = r.get("R2_log")
-            rows.append({
-                "sample":    f"S{r['sample']}",
-                "cut":       r["cut"],
-                "condition": r["condition"],
-                "pH":        str(int(r["pH"])),
-                "direction": str(r["scan_direction"]),
-                "parameter": pname,
-                "value":     float(val),
-                "r2":        float(r2) if pd.notna(r2) else None,
-                "test":      str(r["test"])  if pd.notna(r.get("test"))  else "1",
-                "folder":    str(r["folder"]),
-                "point":     str(r["point"]) if pd.notna(r.get("point")) else "?",
-                "source":    "LSV",
-                "row_id":    f"lsv_{r.name}_{pcol}",
-            })
-
+@st.cache_data
+def parse_raw_ocp(ocp_bytes):
     ocp = pd.read_excel(io.BytesIO(ocp_bytes), sheet_name="Sheet1")
     ocp_parsed = ocp.apply(
         lambda r: pd.Series(parse_ocp_path(r["file_path"], r["file_name"])), axis=1)
@@ -214,37 +254,123 @@ def load_uploaded(lsv_bytes, ocp_bytes):
     ocp = pd.concat([ocp, ocp_parsed], axis=1)
     ocp["sample"] = ocp["sample"].astype(str)
     ocp["folder"] = ocp["folder"].astype(str)
-    ocp["pH"]        = ocp.apply(
-        lambda r: resolve_ph(r["sample"], r["folder"], r.get("test")), axis=1)
-    ocp["cut"]       = ocp["sample"].map(lambda s: SAMPLE_META.get(s, ("", ""))[0])
-    ocp["condition"] = ocp["sample"].map(lambda s: SAMPLE_META.get(s, ("", ""))[1])
+    return ocp
 
-    main_ocp = ocp[
-        ocp["sample"].isin(SAMPLE_META) &
-        ocp["pH"].notna() &
-        ocp["last_voltage_v"].notna()
-    ].copy()
 
-    for _, r in main_ocp.iterrows():
-        n       = str(r["ocp_num"]).strip()
-        ocp_lbl = f"OCP{n}" if n else "OCP1"
-        rows.append({
-            "sample":    f"S{r['sample']}",
-            "cut":       r["cut"],
-            "condition": r["condition"],
-            "pH":        str(int(r["pH"])),
-            "direction": "Both",
-            "parameter": ocp_lbl,
-            "value":     float(r["last_voltage_v"]),
-            "r2":        None,
-            "test":      str(r["test"])  if pd.notna(r.get("test"))  else "1",
-            "folder":    str(r["folder"]),
-            "point":     str(r["point"]) if pd.notna(r.get("point")) else "?",
-            "source":    "OCP",
-            "row_id":    f"ocp_{r.name}_{n}",
-        })
+# ─────────────────────────────────────────────────────────────
+#  DETECT NEW / UNMAPPED SAMPLES & FOLDERS
+# ─────────────────────────────────────────────────────────────
+def find_unmapped(lsv_raw, ocp_raw, sample_meta, ph_map):
+    """
+    Returns:
+      new_samples: sorted list of sample numbers not in sample_meta at all
+      unmapped_ph: sorted list of (sample, folder, sorted(tests)) tuples where
+                   the sample IS known but the folder/test has no pH entry
+    """
+    frames = []
+    if lsv_raw is not None:
+        frames.append(lsv_raw[["sample", "folder", "test"]])
+    if ocp_raw is not None:
+        frames.append(ocp_raw[["sample", "folder", "test"]])
+    if not frames:
+        return [], []
+    all_rows = pd.concat(frames, ignore_index=True).dropna(subset=["sample"])
+    all_rows = all_rows[all_rows["sample"].astype(str) != "None"]
+
+    new_samples = sorted(
+        {s for s in all_rows["sample"].unique() if s not in sample_meta},
+        key=lambda x: (len(x), x))
+
+    unmapped_ph = []
+    known_rows = all_rows[all_rows["sample"].isin(sample_meta)]
+    for (samp, fol), g in known_rows.groupby(["sample", "folder"]):
+        tests_missing = set()
+        for t in g["test"].dropna().unique():
+            if resolve_ph(samp, fol, t, ph_map) is None:
+                tests_missing.add(str(t))
+        if tests_missing:
+            unmapped_ph.append((samp, fol, sorted(tests_missing)))
+    unmapped_ph.sort()
+    return new_samples, unmapped_ph
+
+
+# ─────────────────────────────────────────────────────────────
+#  BUILD FINAL LONG-FORMAT DATASET (fast, NOT cached — depends on the
+#  live sample_meta / ph_map, which can change every time the user fills
+#  in the "new data" panel)
+# ─────────────────────────────────────────────────────────────
+def build_dataset(lsv_raw, ocp_raw, sample_meta, ph_map):
+    rows = []
+
+    if lsv_raw is not None:
+        df = lsv_raw.copy()
+        df["pH"] = df.apply(
+            lambda r: resolve_ph(r["sample"], r["folder"], r.get("test"), ph_map), axis=1)
+        df["cut"]       = df["sample"].map(lambda s: sample_meta.get(s, ("", ""))[0])
+        df["condition"] = df["sample"].map(lambda s: sample_meta.get(s, ("", ""))[1])
+
+        main_lsv = df[
+            df["sample"].isin(sample_meta) &
+            df["pH"].notna() &
+            df["scan_direction"].notna()
+        ].copy()
+
+        param_map = {"Ecorr_fitted_V": "Ecorr", "Icorr_abs": "Icorr", "Epp_V": "Epp"}
+        for _, r in main_lsv.iterrows():
+            for pcol, pname in param_map.items():
+                val = r.get(pcol)
+                if pd.isna(val): continue
+                r2 = r.get("R2_log")
+                rows.append({
+                    "sample":    f"S{r['sample']}",
+                    "cut":       r["cut"],
+                    "condition": r["condition"],
+                    "pH":        str(int(r["pH"])),
+                    "direction": str(r["scan_direction"]),
+                    "parameter": pname,
+                    "value":     float(val),
+                    "r2":        float(r2) if pd.notna(r2) else None,
+                    "test":      str(r["test"])  if pd.notna(r.get("test"))  else "1",
+                    "folder":    str(r["folder"]),
+                    "point":     str(r["point"]) if pd.notna(r.get("point")) else "?",
+                    "source":    "LSV",
+                    "row_id":    f"lsv_{r.name}_{pcol}",
+                })
+
+    if ocp_raw is not None:
+        ocp = ocp_raw.copy()
+        ocp["pH"] = ocp.apply(
+            lambda r: resolve_ph(r["sample"], r["folder"], r.get("test"), ph_map), axis=1)
+        ocp["cut"]       = ocp["sample"].map(lambda s: sample_meta.get(s, ("", ""))[0])
+        ocp["condition"] = ocp["sample"].map(lambda s: sample_meta.get(s, ("", ""))[1])
+
+        main_ocp = ocp[
+            ocp["sample"].isin(sample_meta) &
+            ocp["pH"].notna() &
+            ocp["last_voltage_v"].notna()
+        ].copy()
+
+        for _, r in main_ocp.iterrows():
+            n       = str(r["ocp_num"]).strip()
+            ocp_lbl = f"OCP{n}" if n else "OCP1"
+            rows.append({
+                "sample":    f"S{r['sample']}",
+                "cut":       r["cut"],
+                "condition": r["condition"],
+                "pH":        str(int(r["pH"])),
+                "direction": "Both",
+                "parameter": ocp_lbl,
+                "value":     float(r["last_voltage_v"]),
+                "r2":        None,
+                "test":      str(r["test"])  if pd.notna(r.get("test"))  else "1",
+                "folder":    str(r["folder"]),
+                "point":     str(r["point"]) if pd.notna(r.get("point")) else "?",
+                "source":    "OCP",
+                "row_id":    f"ocp_{r.name}_{n}",
+            })
 
     return pd.DataFrame(rows)
+
 
 @st.cache_data
 def load_prefilled():
@@ -689,41 +815,147 @@ def main():
         "Colour = subsample folder  ·  Click marks to exclude"
     )
 
-    if "deleted_ids"      not in st.session_state: st.session_state.deleted_ids      = set()
-    if "deleted_meta"     not in st.session_state: st.session_state.deleted_meta     = {}
-    if "df"               not in st.session_state: st.session_state.df               = None
-    if "color_overrides"  not in st.session_state: st.session_state.color_overrides  = {}
-    if "symbol_overrides" not in st.session_state: st.session_state.symbol_overrides = {}
+    if "deleted_ids"       not in st.session_state: st.session_state.deleted_ids       = set()
+    if "deleted_meta"      not in st.session_state: st.session_state.deleted_meta      = {}
+    if "lsv_raw"           not in st.session_state: st.session_state.lsv_raw           = None
+    if "ocp_raw"           not in st.session_state: st.session_state.ocp_raw           = None
+    if "df_prefilled"      not in st.session_state: st.session_state.df_prefilled      = None
+    if "color_overrides"   not in st.session_state: st.session_state.color_overrides   = {}
+    if "symbol_overrides"  not in st.session_state: st.session_state.symbol_overrides  = {}
+
+    if "extra_sample_meta" not in st.session_state or "extra_ph_map" not in st.session_state:
+        loaded_meta, loaded_ph = load_mapping_overrides()
+        st.session_state.extra_sample_meta = loaded_meta
+        st.session_state.extra_ph_map      = loaded_ph
 
     with st.sidebar:
         st.header("📂 Data source")
         src = st.radio("Load from:", ["Upload raw files", "Pre-filled Excel"])
 
-        if src == "Upload raw files":
+        using_raw_upload = (src == "Upload raw files")
+
+        if using_raw_upload:
             lf = st.file_uploader("batch_fit_summary.xlsx", type=["xlsx"])
             of = st.file_uploader("ocp_summary.xlsx",       type=["xlsx"])
             if lf and of:
                 with st.spinner("Parsing files…"):
                     try:
-                        st.session_state.df = load_uploaded(lf.read(), of.read())
-                        st.success(f"✅ {len(st.session_state.df):,} rows loaded")
+                        st.session_state.lsv_raw = parse_raw_lsv(lf.read())
+                        st.session_state.ocp_raw = parse_raw_ocp(of.read())
                     except Exception as e:
                         st.error(f"Parse error: {e}")
+                        st.session_state.lsv_raw = None
+                        st.session_state.ocp_raw = None
         else:
-            if st.session_state.df is None:
+            if st.session_state.df_prefilled is None:
                 with st.spinner("Loading pre-filled data…"):
-                    st.session_state.df = load_prefilled()
-                if st.session_state.df is not None:
-                    st.success(f"✅ {len(st.session_state.df):,} rows loaded")
-                else:
-                    st.warning("Place ElectrolyzerWhisker_Final.xlsx in the "
-                               "app folder, or switch to Upload above.")
+                    st.session_state.df_prefilled = load_prefilled()
 
-        if st.session_state.df is None:
-            st.info("Upload both files to get started.")
+        have_raw       = using_raw_upload and (st.session_state.lsv_raw is not None)
+        have_prefilled = (not using_raw_upload) and (st.session_state.df_prefilled is not None)
+
+        if not have_raw and not have_prefilled:
+            st.info("Upload both files to get started."
+                    if using_raw_upload else
+                    "Place ElectrolyzerWhisker_Final.xlsx in the app folder, "
+                    "or switch to Upload above.")
             st.stop()
 
-        df = st.session_state.df
+        # ── Effective mapping tables (defaults + any user-added ones) ──
+        eff_sample_meta = merge_sample_meta(st.session_state.extra_sample_meta)
+        eff_ph_map      = merge_ph_map(st.session_state.extra_ph_map)
+
+        if have_raw:
+            st.divider()
+            st.header("🆕 New / unmapped data")
+            new_samples, unmapped_ph = find_unmapped(
+                st.session_state.lsv_raw, st.session_state.ocp_raw,
+                eff_sample_meta, eff_ph_map)
+
+            if not new_samples and not unmapped_ph:
+                st.caption("✅ Everything in this workbook is already mapped.")
+            else:
+                st.caption(
+                    "Some sample numbers or subsample folders in your upload "
+                    "aren't in the app's lookup table yet. Assign them below "
+                    "so their data shows up in the plots — this is saved so "
+                    "you won't need to do it again next time."
+                )
+
+                # 1) Brand-new sample numbers → need Cut + Condition
+                for samp in new_samples:
+                    with st.expander(f"Sample {samp}  (new)", expanded=True):
+                        c1, c2 = st.columns(2)
+                        cut_choice = c1.selectbox(
+                            "Cut", ["LC", "WJ"], key=f"newsamp_cut_{samp}")
+                        cond_choice = c2.selectbox(
+                            "Condition", COND_ORDER, key=f"newsamp_cond_{samp}")
+                        if st.button("Save sample", key=f"newsamp_save_{samp}"):
+                            st.session_state.extra_sample_meta[samp] = [cut_choice, cond_choice]
+                            save_mapping_overrides(
+                                st.session_state.extra_sample_meta,
+                                st.session_state.extra_ph_map)
+                            st.rerun()
+
+                # 2) Recompute unmapped pH now that any new samples above are
+                #    reflected, so folder/pH assignment can happen in the same
+                #    pass once a sample is saved.
+                eff_sample_meta = merge_sample_meta(st.session_state.extra_sample_meta)
+                _, unmapped_ph = find_unmapped(
+                    st.session_state.lsv_raw, st.session_state.ocp_raw,
+                    eff_sample_meta, eff_ph_map)
+
+                # 3) Folders / tests with no pH entry → need pH
+                for samp, fol, tests in unmapped_ph:
+                    label = f"Sample {samp} · Folder {fol}  (tests: {', '.join(tests)})"
+                    with st.expander(label, expanded=True):
+                        per_test = st.checkbox(
+                            "Different pH per test", key=f"phmode_{samp}_{fol}")
+                        entry = {}
+                        if per_test and len(tests) > 1:
+                            cols = st.columns(len(tests))
+                            for c, t in zip(cols, tests):
+                                entry[t] = c.selectbox(
+                                    f"Test {t} pH", [1, 4],
+                                    key=f"ph_{samp}_{fol}_{t}")
+                        else:
+                            ph_val = st.selectbox(
+                                "pH", [1, 4], key=f"ph_{samp}_{fol}_all")
+                        if st.button("Save pH", key=f"phsave_{samp}_{fol}"):
+                            if samp not in st.session_state.extra_ph_map:
+                                st.session_state.extra_ph_map[samp] = {}
+                            if per_test and len(tests) > 1:
+                                st.session_state.extra_ph_map[samp][fol] = entry
+                            else:
+                                st.session_state.extra_ph_map[samp][fol] = ph_val
+                            save_mapping_overrides(
+                                st.session_state.extra_sample_meta,
+                                st.session_state.extra_ph_map)
+                            st.rerun()
+
+                if st.button("↺ Clear all saved new-data mappings",
+                             use_container_width=True):
+                    st.session_state.extra_sample_meta = {}
+                    st.session_state.extra_ph_map      = {}
+                    save_mapping_overrides({}, {})
+                    st.rerun()
+
+            # Re-merge in case anything changed above
+            eff_sample_meta = merge_sample_meta(st.session_state.extra_sample_meta)
+            eff_ph_map      = merge_ph_map(st.session_state.extra_ph_map)
+
+        # ── Build the working long-format dataframe ──
+        if have_raw:
+            df = build_dataset(st.session_state.lsv_raw, st.session_state.ocp_raw,
+                               eff_sample_meta, eff_ph_map)
+            st.success(f"✅ {len(df):,} rows loaded")
+        else:
+            df = st.session_state.df_prefilled
+            if df is None:
+                st.stop()
+            st.success(f"✅ {len(df):,} rows loaded")
+
+        st.session_state.df = df
 
         st.divider()
         st.header("⚙ Filters")
@@ -757,6 +989,12 @@ def main():
             '<span style="font-size:11px"> X mark = Test 2</span>',
             unsafe_allow_html=True)
         st.markdown("**Colour = subsample folder**")
+        st.caption(
+            "Reference list below covers the original sample set. New "
+            "samples/folders you map above get an automatic grey placeholder "
+            "colour — pick a real one for them in **✏️ Customise plot → "
+            "Colours** further down."
+        )
         groups = [
             ("LC pH 1", [
                 ("#FF1744", "S52_01, S60_01, S64_01"),
